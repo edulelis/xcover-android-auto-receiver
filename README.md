@@ -23,6 +23,7 @@ End-to-end projection has been verified only on a Samsung Galaxy XCover Pro `SM-
 | Fixed landscape receiver UI | Verified |
 | Automatic wake on stable external power | Verified on the configured XCover |
 | Unplugged screen timeout and Doze | Verified on the configured XCover |
+| Automatic Android Auto retries stop while unplugged | Verified on the configured XCover |
 | Rain touch lock on the programmable side key | Verified on the physical XCover |
 | BLE TPMS setup, parsing framework, stale-data handling, and alert simulation | Implemented and tested |
 | Physical LEEPEE/MotorCare TPMS readings and thresholds | Pending hardware capture and calibration |
@@ -142,6 +143,8 @@ After setup on the configured receiver:
 
 No companion app needs to be opened on the projecting phone. During projection, that phone may leave its normal Wi-Fi network to join the XCover Wi-Fi Direct group. Wireless ADB to the phone may therefore disappear until projection ends.
 
+When external power is removed, automatic Android Auto wake retries stop so the parked receiver does not repeatedly wake its wireless subsystem. **Connect** remains available for an explicit manual attempt. Stable external power restarts the automatic retry cycle.
+
 The XCover programmable side key (`keyCode 1015`) toggles a rain touch lock. One press blocks application touch while projection, display, and audio continue; a second press restores touch. Restarting the app always returns to unlocked input.
 
 ## TPMS
@@ -235,11 +238,12 @@ For exact build, physical-validation, signing, tagging, publication, and post-do
 
 ## Verification and open risks
 
-Verified on 2026-08-04:
+Verified on 2026-08-05:
 
 - HFP SLC, Android Auto Bluetooth messages 1/2/3, 5 GHz Wi-Fi Direct, and projection;
 - reconnect after app restart and cold boot;
 - fixed landscape home, power wake, unplugged timeout, and Doze entry;
+- cancellation of automatic Android Auto wake retries after a reversible simulated power removal on the physical receiver, their restart on powered operation, and the ten-second startup wake-lock bound;
 - TPMS parsing, assignment, expiration, simulation, localization contract, and projection overlay without physical sensors;
 - side-key rain lock mapping and immediate touch interception on the physical XCover.
 
@@ -250,6 +254,7 @@ Still pending:
 - ignition micro-interruption testing on the vehicle;
 - physical LEEPEE/MotorCare BLE packet validation and threshold calibration;
 - one live Android Auto projection check of the rain lock.
+- a repeated overnight unplugged discharge measurement with `v0.2.0`.
 
 The complete, dated matrix is maintained in [docs/current-state.md](docs/current-state.md).
 

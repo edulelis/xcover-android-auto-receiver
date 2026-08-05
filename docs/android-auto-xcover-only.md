@@ -1,7 +1,7 @@
 ---
 title: Android Auto receiver research for the XCover Pro
 status: verified
-last_verified: 2026-08-04
+last_verified: 2026-08-05
 scope: SM-G715U1 and an anonymized Android projecting phone
 authority: technical explanation; use current-state.md for deployed state
 ---
@@ -104,7 +104,8 @@ The dedicated build:
 - starts from boot and stable external power events;
 - does not reopen the home screen for every `SCREEN_ON` broadcast;
 - leaves USB device listening disabled by default;
-- retries the native trigger on a shorter cycle than the unpatched build;
+- retries the native trigger on a shorter cycle than the unpatched build only while external power is present;
+- cancels automatic Bluetooth wake retries as soon as external power is removed while preserving explicit manual connection;
 - suppresses non-actionable native Wi-Fi Direct toasts while retaining log evidence;
 - avoids replacing an active projection when Samsung emits multiple boot-complete events.
 
@@ -145,6 +146,7 @@ A wireless Android Auto dongle connected to the XCover as a USB host remains a f
 - Confirm whether the saved BSSID survives group recreation and reboot.
 - Test music, navigation prompts, microphone, and calls with the real intercom.
 - Test physical power removal, reconnection, and short ignition interruptions.
+- Repeat the overnight unplugged discharge measurement with the fixed build; automatic retry cancellation is verified, but the long-duration battery improvement is not yet measured.
 - Measure temperature during charging, full brightness, navigation, and direct sun.
 - Revalidate the native flow after Android Auto or Open Headunit upgrades.
 

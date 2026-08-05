@@ -1,7 +1,7 @@
 ---
 title: Canonical installed state
 status: current
-last_verified: 2026-08-04
+last_verified: 2026-08-05
 last_updated: 2026-08-05
 audience: operators, maintainers, and LLM agents
 ---
@@ -30,7 +30,7 @@ This file is the source of truth for what is currently installed, configured, ve
 | Active app label | `Open Headunit TPMS` | Verified with `aapt` and on-device install |
 | Active package | `com.andrerinas.headunitrevived.hfpslc` | Verified |
 | Version | `3.2.0-hfp-slc`, version code 91 | Verified |
-| Installed APK SHA-256 | `7f6dde4d7b6fa89dc3eb92e94e8c1937a557e89cd96fe1120a0826c66e1abbb1` | Public `v0.1.0` asset; verified from a clean patch application and from the installed package |
+| Installed APK SHA-256 | `c46be61de0c99b94caac61e808a9697defb4bac7201f00c4cf0e8d8a1cb44b13` | `v0.2.0` release candidate; verified from a clean patch application and from the installed package |
 | Official Open Headunit | installed but disabled as rollback | Verified in cleanup record |
 | HeadlessUnit | installed but disabled; not in the validated path | Historical/rollback |
 | App default language | English base resources; system locale selected by default | Verified by resources and locale test |
@@ -56,6 +56,7 @@ See [`../apks/README.md`](../apks/README.md) for source, certificate, and rollba
 |---|---|
 | Start on power connected | enabled; 1.5-second debounce |
 | Wake lock | bounded to ten seconds |
+| Automatic Native Android Auto retries | external power only; cancelled on power removal; explicit manual connection remains available |
 | Secure-lock bypass | not implemented; only a no-credential lock screen can be dismissed |
 | Stay awake while powered | enabled for all external power types |
 | Unplugged screen timeout | 30 seconds |
@@ -106,10 +107,12 @@ Cleanup batches use `pm disable-user --user 0`, not removal. Matching rollback s
 ## Verified test set
 
 - patched Open Headunit unit tests and `assembleGithubDebug`;
+- clean application of both repository patches, full unit suite, and APK assembly for the exact `v0.2.0` candidate;
 - HFP command parsing/order and optional codec negotiation;
-- Native Android Auto projection and reconnect;
+- Native Android Auto projection and reconnect after an app restart with the exact `v0.2.0` candidate;
 - landscape layout contracts and cold-start crash regression;
 - power-connected wake and unplugged Doze behavior;
+- automatic Native Android Auto retry cancellation after a simulated power disconnect, powered retry restoration after reset, and ten-second startup wake-lock release on the physical XCover;
 - TPMS parser, assignment, expiration, critical evaluation, localization coverage, and overlay contract;
 - physical-device visual checks for the home and simulated TPMS alert;
 - side-key `keyCode 1015`, home touch interception, and lock/unlock feedback on the physical XCover;
@@ -127,6 +130,7 @@ Cleanup batches use `pm disable-user --user 0`, not removal. Matching rollback s
 7. Calibrate front/rear pressure thresholds against a known gauge.
 8. Repeat the touch-lock interception check during a live Android Auto projection.
 9. Reassess the Yamaha/Tracer theme if the project's personal, non-commercial scope changes.
+10. Repeat the overnight unplugged discharge measurement with `v0.2.0`; the retry cancellation is verified, but the long-duration battery improvement is not yet measured.
 
 ## Public repository privacy state
 

@@ -1,7 +1,7 @@
 ---
 title: Installation and operation guide
 status: current for the verified device pair
-last_verified: 2026-08-04
+last_verified: 2026-08-05
 audience: installers, riders, and maintainers
 ---
 
@@ -211,7 +211,7 @@ On the configured receiver:
 
 No app needs to be opened on the projecting phone. Android Auto may move that phone away from its normal Wi-Fi network while it joins the XCover Wi-Fi Direct group.
 
-When external power is removed, the configured XCover does not shut down immediately. Its display times out after 30 seconds, then Android may enter Light Doze and Deep Doze. Applying stable external power wakes the display and reopens the receiver app.
+When external power is removed, the configured XCover does not shut down immediately. Its display times out after 30 seconds, then Android may enter Light Doze and Deep Doze. Automatic Bluetooth wake retries stop while unplugged so the parked receiver does not repeatedly wake the wireless subsystem. The **Connect** action remains available for an explicit manual attempt. Applying stable external power wakes the display, reopens the receiver app, and restarts automatic Android Auto retries.
 
 ### Rain touch lock
 

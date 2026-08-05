@@ -1,7 +1,7 @@
 ---
 title: Sideloaded APK ledger
 status: maintained
-last_updated: 2026-08-04
+last_updated: 2026-08-05
 ---
 
 # Sideloaded APK ledger
@@ -19,21 +19,24 @@ APK binaries are not committed to this repository. Before installing an APK, rec
 | Upstream | [Open Headunit](https://github.com/andreknieriem/open-headunit), commit `581a55f26fe74b2c93eae5778ddcd683eb08b113` |
 | Base patch | [`../patches/open-headunit-hfp-slc.patch`](../patches/open-headunit-hfp-slc.patch) |
 | Incremental patch | [`../patches/open-headunit-tpms-pairing.patch`](../patches/open-headunit-tpms-pairing.patch) |
-| Local build artifact | `tmp/apks/Open-Headunit-TPMS-motorcycle-restored-debug.apk` |
-| Public release | [`v0.1.0`](../../../releases/tag/v0.1.0) |
-| Public asset | `open-headunit-tpms-xcover-v0.1.0-debug.apk` |
-| APK SHA-256 | `7f6dde4d7b6fa89dc3eb92e94e8c1937a557e89cd96fe1120a0826c66e1abbb1` |
+| Local build artifact | `tmp/release/v0.2.0/open-headunit-tpms-xcover-v0.2.0-debug.apk` |
+| Public release | [`v0.2.0`](../../../releases/tag/v0.2.0) |
+| Public asset | `open-headunit-tpms-xcover-v0.2.0-debug.apk` |
+| APK SHA-256 | `c46be61de0c99b94caac61e808a9697defb4bac7201f00c4cf0e8d8a1cb44b13` |
 | Base patch SHA-256 | `5758bd9b46dc8355eccba5729d7227c43d6b385927d51965087a5d089c4c1ab1` |
-| Incremental patch SHA-256 | `5dc0e39707b3660180a00587238a2be4a96a17f221d35d2e829a2569c056b85e` |
+| Incremental patch SHA-256 | `cded7c165e4b75ee7b0cb1ba912deefe330a5e48f2ccababcf5e0923da4299be` |
 | Signing certificate | Android debug certificate: `C=US, O=Android, CN=Android Debug` |
 | Certificate SHA-256 | `bc31e8db447636a30d2f1f97bd8ca190b110c33395d2321690a995171e72eac1` |
-| Build and installation date | 2026-08-04 |
+| Build and installation date | 2026-08-05 |
 | Current status | Installed and verified for wireless projection; physical TPMS sensor validation pending |
 
 ### Verified behavior
 
 - Completed HFP SLC, Bluetooth credential exchange, Wi-Fi Direct association, and Android Auto projection.
 - Starts after boot and stable external-power events.
+- Runs automatic Native Android Auto wake retries only while external power is present and cancels them on power removal.
+- Keeps the explicit **Connect** action available while unplugged.
+- Bounds the power-startup partial wake lock to ten seconds.
 - Does not relaunch the home screen for every `SCREEN_ON` broadcast.
 - Leaves USB device listening disabled by default.
 - Suppresses non-actionable native Wi-Fi Direct toasts while keeping diagnostic logs.
@@ -52,9 +55,13 @@ APK binaries are not committed to this repository. Before installing an APK, rec
 
 ### Verification record
 
-- `:app:testGithubDebugUnitTest`: passed on 2026-08-04.
-- `:app:assembleGithubDebug`: passed on 2026-08-04.
-- The privacy-normalized patches were reapplied to a clean checkout and rebuilt on 2026-08-04. This verification build was not published or installed because it does not replace the already verified `v0.1.0` asset.
+- `:app:testGithubDebugUnitTest`: passed on 2026-08-05.
+- `:app:assembleGithubDebug`: passed on 2026-08-05.
+- Both repository patches were applied to a clean checkout before building the exact `v0.2.0` candidate.
+- The exact candidate's package, update-compatible certificate, local and installed SHA-256, preserved preferences, and launch were verified on the physical XCover.
+- A reversible Android battery-service power simulation verified that automatic retries stop after power removal and restart after power restoration; the startup wake lock released after ten seconds.
+- Android Auto projection and reconnection after an app restart were verified with the exact candidate.
+- The overnight unplugged discharge rate with `v0.2.0` remains pending measurement.
 - Visual inspection: Android 15 emulator at 2400×1080 landscape and the physical XCover.
 - Physical side-key lock/unlock and blocked home touch input: verified on the XCover.
 - Projection activity touch interception: contract-tested; live projection interaction check pending.
