@@ -1,0 +1,30 @@
+# macOS and editor state
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Local Android and Gradle state
+.gradle/
+**/build/
+local.properties
+
+# Local credentials and signing material
+.env
+.env.*
+!.env.example
+*.jks
+*.keystore
+*.pem
+*.key
+
+# Binary Android packages belong in GitHub Releases, not Git history
+*.apk
+*.aab
+
+# Generated local research, renders, PDFs, and release staging
+tmp/
+
+# Raw inventories are local-only because device diagnostics can fingerprint an installation.
+artifacts/device-snapshots/*.txt

@@ -1,0 +1,2590 @@
+diff --git a/app/build.gradle.kts b/app/build.gradle.kts
+index 914d6a0f3f163c484f736ef3905040f2e10409cb..b0d5d88d1500e6fa5474d22cab151ce48a899494 100644
+--- a/app/build.gradle.kts
++++ b/app/build.gradle.kts
+@@ -141,7 +141,12 @@ android {
+         }
+ 
+         getByName("debug") {
+-            // debugging setup
++            // Keep experimental builds isolated from the Play/GitHub-signed app so an
++            // on-device handshake test cannot overwrite a user's working configuration.
++            applicationIdSuffix = ".hfpslc"
++            versionNameSuffix = "-hfp-slc"
++            resValue("string", "app_name", "Open Headunit Receiver")
++            resValue("string", "title", "Open Headunit Receiver")
+         }
+     }
+ 
+diff --git a/app/src/main/AndroidManifest.xml b/app/src/main/AndroidManifest.xml
+index 4cd6431e77ba831b106b2e6daf2249b450b08074..3c1ec8bc873051fe150f988dd7975bba8c660758 100644
+--- a/app/src/main/AndroidManifest.xml
++++ b/app/src/main/AndroidManifest.xml
+@@ -36,7 +36,7 @@
+         android:required="false" />
+ 
+     <permission
+-        android:name="com.andrerinas.openheadunit.permission.NAVIGATION_UPDATE"
++        android:name="${applicationId}.permission.NAVIGATION_UPDATE"
+         android:protectionLevel="signature" />
+ 
+     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+@@ -64,6 +64,7 @@
+     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+     <uses-permission android:name="android.permission.RECORD_AUDIO" />
+     <uses-permission android:name="android.permission.WRITE_SETTINGS" />
++    <uses-permission android:name="android.permission.WRITE_SECURE_SETTINGS" />
+     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+diff --git a/app/src/main/java/com/andrerinas/openheadunit/aap/AapService.kt b/app/src/main/java/com/andrerinas/openheadunit/aap/AapService.kt
+index 6f2dad2e98b138e85522603619271873c8d19362..356f9a4fab0b6e381d8a8bd8bce0344c2085e88c 100644
+--- a/app/src/main/java/com/andrerinas/openheadunit/aap/AapService.kt
++++ b/app/src/main/java/com/andrerinas/openheadunit/aap/AapService.kt
+@@ -899,6 +899,11 @@ class AapService : Service(), UsbReceiver.Listener {
+      * that [VideoDecoder.setSurface] is always called before the first video frame arrives.
+      */
+     private fun onConnected() {
++        // Mark the session recoverable as soon as the transport connects. Waiting until
++        // TransportStarted leaves the boot/unlock handshake window uncovered: if the phone
++        // closes during service discovery, Disconnected would otherwise be mistaken for the
++        // StateFlow's harmless initial replay and Native AA would never re-arm itself.
++        hasEverConnected = true
+         isSwitchingToAccessory.set(false)
+         updateNotification()
+         acquireWifiLock()
+@@ -1673,7 +1678,15 @@ class AapService : Service(), UsbReceiver.Listener {
+         if (intent?.getBooleanExtra(BootCompleteReceiver.EXTRA_BOOT_START, false) == true) {
+             // Mark wake as handled so the dynamic wakeDetectReceiver doesn't double-trigger
+             lastWakeHandledTimestamp = SystemClock.elapsedRealtime()
+-            launchMainActivityOnBoot()
++            if (commManager.isConnected ||
++                commManager.connectionState.value is CommManager.ConnectionState.Connecting) {
++                // Samsung sends LOCKED_BOOT_COMPLETED and BOOT_COMPLETED separately. The first
++                // event can already have AA connected by the time the second arrives; opening
++                // MainActivity again would replace the projection surface mid-handshake.
++                AppLog.i("Boot auto-start: connection already active/in progress; ignoring duplicate boot UI launch")
++            } else {
++                launchMainActivityOnBoot()
++            }
+         }
+ 
+         when (intent?.action) {
+diff --git a/app/src/main/java/com/andrerinas/openheadunit/app/BootCompleteReceiver.kt b/app/src/main/java/com/andrerinas/openheadunit/app/BootCompleteReceiver.kt
+index 045fe62dbc2ece7a48375aa56195828455c8c8fd..0397eb90244cd43207f6c1ef658cda3ce4d1044c 100644
+--- a/app/src/main/java/com/andrerinas/openheadunit/app/BootCompleteReceiver.kt
++++ b/app/src/main/java/com/andrerinas/openheadunit/app/BootCompleteReceiver.kt
+@@ -1,8 +1,11 @@
+ package com.andrerinas.openheadunit.app
+ 
++import android.Manifest
+ import android.content.BroadcastReceiver
+ import android.content.Context
+ import android.content.Intent
++import android.content.pm.PackageManager
++import android.provider.Settings as AndroidSettings
+ import androidx.core.content.ContextCompat
+ import com.andrerinas.openheadunit.aap.AapService
+ import com.andrerinas.openheadunit.utils.AppLog
+@@ -17,6 +20,7 @@ class BootCompleteReceiver : BroadcastReceiver() {
+         if (action !in BOOT_ACTIONS) return
+ 
+         AppLog.i("Boot auto-start: received action=$action")
++        restoreWirelessAdbIfAuthorized(context, action)
+ 
+         val isLocked = Build.VERSION.SDK_INT >= Build.VERSION_CODES.N && 
+                       !(context.getSystemService(Context.USER_SERVICE) as UserManager).isUserUnlocked
+@@ -65,6 +69,25 @@ class BootCompleteReceiver : BroadcastReceiver() {
+ 
+     companion object {
+         const val EXTRA_BOOT_START = "com.andrerinas.openheadunit.EXTRA_BOOT_START"
++        private const val ADB_WIFI_ENABLED = "adb_wifi_enabled"
++
++        private fun restoreWirelessAdbIfAuthorized(context: Context, trigger: String?) {
++            if (ContextCompat.checkSelfPermission(
++                    context,
++                    Manifest.permission.WRITE_SECURE_SETTINGS
++                ) != PackageManager.PERMISSION_GRANTED
++            ) {
++                AppLog.i("Wireless ADB restore skipped: WRITE_SECURE_SETTINGS not granted")
++                return
++            }
++
++            val changed = AndroidSettings.Global.putInt(
++                context.contentResolver,
++                ADB_WIFI_ENABLED,
++                1
++            )
++            AppLog.i("Wireless ADB restore: enabled=$changed trigger=$trigger")
++        }
+ 
+         private val BOOT_ACTIONS = setOf(
+             // Standard Android boot
+diff --git a/app/src/main/java/com/andrerinas/openheadunit/connection/NativeAaHandshakeManager.kt b/app/src/main/java/com/andrerinas/openheadunit/connection/NativeAaHandshakeManager.kt
+index e748a1b49282cf3645f1855ef294418da300a6b7..34d728d74c5a7360b5aa8fa7fee4a81189bbbd14 100644
+--- a/app/src/main/java/com/andrerinas/openheadunit/connection/NativeAaHandshakeManager.kt
++++ b/app/src/main/java/com/andrerinas/openheadunit/connection/NativeAaHandshakeManager.kt
+@@ -39,6 +39,37 @@ class NativeAaHandshakeManager(
+         private val HSP_AG_UUID = UUID.fromString("00001112-0000-1000-8000-00805f9b34fb") // Headset Profile AG
+         private val HFP_AG_UUID = UUID.fromString("0000111f-0000-1000-8000-00805f9b34fb") // Hands-Free Profile AG
+         private const val HANDSHAKE_RESPONSE_TIMEOUT_MS = 15_000L
++        private const val HFP_COMMAND_TIMEOUT_MS = 5_000L
++        private const val ACTIVE_POKE_HOLD_MS = 8_000L
++        private const val ACTIVE_POKE_RETRY_DELAY_MS = 5_000L
++        internal const val HFP_HF_FEATURES = 156
++
++        internal fun parseHfpAgFeatures(response: String): Int? =
++            Regex("""(?:^|[\r\n])\s*\+BRSF:\s*(\d+)""")
++                .find(response)
++                ?.groupValues
++                ?.get(1)
++                ?.toIntOrNull()
++
++        internal fun hfpSlcFollowUpCommands(agFeatures: Int): List<String> = buildList {
++            // HF bit 7 and AG bit 9 advertise codec negotiation. HFP requires AT+BAC before
++            // CIND when both sides set those (the feature bit positions differ by role).
++            if ((HFP_HF_FEATURES and (1 shl 7)) != 0 && (agFeatures and (1 shl 9)) != 0) {
++                add("AT+BAC=1,2")
++            }
++            add("AT+CIND=?")
++            add("AT+CIND?")
++            add("AT+CMER=3,0,0,1")
++        }
++
++        internal fun hfpTerminalResponse(response: String): Boolean? {
++            val lines = response.split('\r', '\n').map(String::trim)
++            return when {
++                lines.any { it == "OK" } -> true
++                lines.any { it == "ERROR" } -> false
++                else -> null
++            }
++        }
+ 
+         /** Which of [allServiceNames] are secondary Bluetooth radios, i.e. not [primaryServiceName]
+          *  (dual-Bluetooth-radio head units). Pure and unit-testable: identity is by system
+@@ -361,6 +392,73 @@ class NativeAaHandshakeManager(
+         }
+     }
+ 
++    private data class HfpCommandResult(
++        val succeeded: Boolean,
++        val response: String = ""
++    )
++
++    /**
++     * Sends one HFP command and waits for its terminal OK/ERROR response. The response body is
++     * returned only for protocol decisions and is never logged: unsolicited HFP events may
++     * contain phone numbers or other personal data.
++     */
++    private suspend fun exchangeHfpCommand(
++        socket: BluetoothSocket,
++        command: String
++    ): HfpCommandResult = withContext(Dispatchers.IO) {
++        val input = socket.inputStream
++        val output = socket.outputStream
++        val response = StringBuilder()
++        val buffer = ByteArray(1024)
++
++        output.write("$command\r".toByteArray(Charsets.US_ASCII))
++        output.flush()
++
++        val deadlineNanos = System.nanoTime() + HFP_COMMAND_TIMEOUT_MS * 1_000_000L
++        while (isRunning && isActive && socket.isConnected && System.nanoTime() < deadlineNanos) {
++            while (input.available() > 0) {
++                val read = input.read(buffer, 0, minOf(input.available(), buffer.size))
++                if (read < 0) return@withContext HfpCommandResult(false)
++                response.append(String(buffer, 0, read, Charsets.US_ASCII))
++
++                when (hfpTerminalResponse(response.toString())) {
++                    true -> return@withContext HfpCommandResult(true, response.toString())
++                    false -> return@withContext HfpCommandResult(false, response.toString())
++                    null -> Unit
++                }
++            }
++            delay(25)
++        }
++
++        HfpCommandResult(false, response.toString())
++    }
++
++    /**
++     * Establishes the mandatory HFP Hands-Free Service Level Connection with the phone's Audio
++     * Gateway. Merely opening the RFCOMM socket is not enough: the HF (the head unit) must speak
++     * first and complete BRSF/CIND/CMER before Android treats it as a real car hands-free unit.
++     */
++    private suspend fun establishHfpSlc(socket: BluetoothSocket): Boolean {
++        AppLog.i("NativeAA: Starting HFP Service Level Connection negotiation.")
++
++        val brsf = exchangeHfpCommand(socket, "AT+BRSF=$HFP_HF_FEATURES")
++        if (!brsf.succeeded) {
++            AppLog.w("NativeAA: HFP SLC failed at BRSF.")
++            return false
++        }
++
++        val agFeatures = parseHfpAgFeatures(brsf.response) ?: 0
++        for (command in hfpSlcFollowUpCommands(agFeatures)) {
++            if (!exchangeHfpCommand(socket, command).succeeded) {
++                AppLog.w("NativeAA: HFP SLC failed at ${command.substringBefore('=')}.")
++                return false
++            }
++        }
++
++        AppLog.i("NativeAA: HFP Service Level Connection established.")
++        return true
++    }
++
+     /**
+      * Tries HFP_AG_UUID first, falling back to HSP_AG_UUID, holding whichever connects for
+      * [holdMs]. Returns true if either connected. Mirrors openautolink's ConnectProfile
+@@ -373,9 +471,17 @@ class NativeAaHandshakeManager(
+                 socket = device.createRfcommSocketToServiceRecord(uuid)
+                 AppLog.i("NativeAA: Calling socket.connect() for ${device.name} via $uuid...")
+                 socket.connect()
+-                AppLog.i("NativeAA: Successfully poked ${device.name} via $uuid. Holding ${holdMs}ms...")
++                AppLog.i("NativeAA: Connected to ${device.name} via $uuid.")
++
++                if (uuid == HFP_AG_UUID) {
++                    establishHfpSlc(socket)
++                }
++
++                AppLog.i("NativeAA: Holding wake connection for ${holdMs}ms...")
+                 delay(holdMs)
+                 return true
++            } catch (e: CancellationException) {
++                throw e
+             } catch (e: Exception) {
+                 AppLog.d("NativeAA: Poke via $uuid to ${device.name} failed: ${e.message}")
+             } finally {
+@@ -439,10 +545,13 @@ class NativeAaHandshakeManager(
+                         break
+                     }
+                     AppLog.i("NativeAA: Attempting active poke to device: ${device.name} (${device.address})...")
+-                    pokeDevice(device, holdMs = 15000)
++                    pokeDevice(device, holdMs = ACTIVE_POKE_HOLD_MS)
+                 }
+ 
+-                delay(15000) // retry cadence, matches both reference implementations' 15-20s interval
++                // The completed HFP SLC normally triggers the phone within a few seconds. A
++                // shorter idle gap avoids the old ~30s total retry cycle while retaining an
++                // 8s grace period for slower Bluetooth stacks.
++                delay(ACTIVE_POKE_RETRY_DELAY_MS)
+             }
+         }
+     }
+diff --git a/app/src/main/java/com/andrerinas/openheadunit/connection/WifiDirectManager.kt b/app/src/main/java/com/andrerinas/openheadunit/connection/WifiDirectManager.kt
+index 16ceeac109b59ff388712f11d4b01262cfdf5ebf..84f19597b326d7f1aa4fd63db6c79d7b29f17a6d 100644
+--- a/app/src/main/java/com/andrerinas/openheadunit/connection/WifiDirectManager.kt
++++ b/app/src/main/java/com/andrerinas/openheadunit/connection/WifiDirectManager.kt
+@@ -493,7 +493,6 @@ class WifiDirectManager(private val context: Context) : WifiP2pManager.Connectio
+                 } else if (shouldRetryNativeGroupFor5Ghz(frequency)) {
+                     native5GhzBandMismatchRetries++
+                     AppLog.w("WifiDirectManager: Native AA group was requested as 5GHz but came up on $frequency MHz ($band). Recreating 5GHz group (mismatch retry $native5GhzBandMismatchRetries/$MAX_NATIVE_5GHZ_BAND_MISMATCH_RETRIES).")
+-                    showToast("Native AA WiFi Direct started on $band. Retrying 5GHz...")
+                     removeGroupAndRetryNative5Ghz()
+                     return
+                 }
+@@ -1062,7 +1061,6 @@ class WifiDirectManager(private val context: Context) : WifiP2pManager.Connectio
+ 
+         lastNativeGroupStatusMessage = message
+         AppLog.i("WifiDirectManager: $message, SSID=$ssid")
+-        showToast(message)
+     }
+ 
+     private fun showToast(message: String) {
+diff --git a/app/src/main/java/com/andrerinas/openheadunit/main/DedicatedHomeUiState.kt b/app/src/main/java/com/andrerinas/openheadunit/main/DedicatedHomeUiState.kt
+new file mode 100644
+index 0000000000000000000000000000000000000000..95cff39017f20496b83818478f81e3b99f8ef2ab
+--- /dev/null
++++ b/app/src/main/java/com/andrerinas/openheadunit/main/DedicatedHomeUiState.kt
+@@ -0,0 +1,26 @@
++package com.andrerinas.openheadunit.main
++
++import com.andrerinas.openheadunit.connection.CommManager
++
++internal enum class DedicatedHomeConnectionState {
++    READY,
++    CONNECTING,
++    CONNECTED
++}
++
++internal fun resolveDedicatedHomeConnectionState(
++    connectionState: CommManager.ConnectionState,
++    scanning: Boolean
++): DedicatedHomeConnectionState = when {
++    connectionState is CommManager.ConnectionState.TransportStarted ->
++        DedicatedHomeConnectionState.CONNECTED
++
++    scanning ||
++        connectionState is CommManager.ConnectionState.Connecting ||
++        connectionState is CommManager.ConnectionState.Connected ||
++        connectionState is CommManager.ConnectionState.StartingTransport ||
++        connectionState is CommManager.ConnectionState.HandshakeComplete ->
++        DedicatedHomeConnectionState.CONNECTING
++
++    else -> DedicatedHomeConnectionState.READY
++}
+diff --git a/app/src/main/java/com/andrerinas/openheadunit/main/HomeFragment.kt b/app/src/main/java/com/andrerinas/openheadunit/main/HomeFragment.kt
+index c4b8af670fe37ab156f1a867a828aced15a49865..552df636133c928fbfdbaef731daab3500973026 100644
+--- a/app/src/main/java/com/andrerinas/openheadunit/main/HomeFragment.kt
++++ b/app/src/main/java/com/andrerinas/openheadunit/main/HomeFragment.kt
+@@ -63,7 +63,7 @@ class HomeFragment : Fragment() {
+ 
+     private val bluetoothPermissionLauncher = registerForActivityResult(ActivityResultContracts.RequestPermission()) { isGranted ->
+         if (isGranted) {
+-            showNativeAaDeviceSelector()
++            connectNativeAaToConfiguredPhone()
+         } else {
+             Toast.makeText(requireContext(), R.string.bt_permission_denied, Toast.LENGTH_LONG).show()
+         }
+@@ -76,18 +76,14 @@ class HomeFragment : Fragment() {
+     private lateinit var wifi_text_view: TextView
+     private lateinit var exitButton: Button
+     private lateinit var self_mode_text: TextView
++    private lateinit var connectionBadge: TextView
++    private lateinit var audioRouteText: TextView
+     private var hasAttemptedAutoConnect = false
+     private var hasAttemptedSingleUsbAutoConnect = false
+     private var activeDialog: androidx.appcompat.app.AlertDialog? = null
+ 
+     private fun updateWifiButtonFeedback(scanning: Boolean) {
+-        if (scanning) {
+-            wifi_text_view.text = getString(R.string.searching)
+-            wifi.alpha = 0.6f
+-        } else {
+-            wifi_text_view.text = getString(R.string.wifi)
+-            wifi.alpha = 1.0f
+-        }
++        renderDedicatedHomeState(scanning)
+     }
+ 
+     override fun onCreateView(inflater: LayoutInflater, container: ViewGroup?, savedInstanceState: Bundle?): View? {
+@@ -104,6 +100,8 @@ class HomeFragment : Fragment() {
+         wifi_text_view = view.findViewById(R.id.wifi_text)
+         exitButton = view.findViewById(R.id.exit_button)
+         self_mode_text = view.findViewById(R.id.self_mode_text)
++        connectionBadge = view.findViewById(R.id.connection_badge)
++        audioRouteText = view.findViewById(R.id.audio_route_text)
+ 
+         // Portrait layout: cap grid width so square buttons never overflow
+         // into the WiFi-pill or Exit-button areas on compact/square devices.
+@@ -460,6 +458,18 @@ class HomeFragment : Fragment() {
+         }
+ 
+         wifi.setOnClickListener {
++            if (commManager.isConnected) {
++                showProjection()
++                return@setOnClickListener
++            }
++
++            if (resolveDedicatedHomeConnectionState(
++                    commManager.connectionState.value,
++                    AapService.scanningState.value
++                ) == DedicatedHomeConnectionState.CONNECTING) {
++                return@setOnClickListener
++            }
++
+             val mode = App.provide(requireContext()).settings.wifiConnectionMode
+             when (mode) {
+                 1 -> { // Auto (Headunit Server) - One-Shot Scan
+@@ -521,7 +531,7 @@ class HomeFragment : Fragment() {
+                         ContextCompat.checkSelfPermission(requireContext(), android.Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) {
+                         bluetoothPermissionLauncher.launch(android.Manifest.permission.BLUETOOTH_CONNECT)
+                     } else {
+-                        showNativeAaDeviceSelector()
++                        connectNativeAaToConfiguredPhone()
+                     }
+                 }
+                 else -> { // Manual (0) -> Open List
+@@ -534,9 +544,13 @@ class HomeFragment : Fragment() {
+         }
+ 
+         wifi.setOnLongClickListener {
+-            val controller = findNavController()
+-            if (controller.currentDestination?.id == R.id.homeFragment) {
+-                controller.navigate(R.id.action_homeFragment_to_networkListFragment)
++            if (App.provide(requireContext()).settings.wifiConnectionMode == 3) {
++                showNativeAaDeviceSelector()
++            } else {
++                val controller = findNavController()
++                if (controller.currentDestination?.id == R.id.homeFragment) {
++                    controller.navigate(R.id.action_homeFragment_to_networkListFragment)
++                }
+             }
+             true
+         }
+@@ -599,19 +613,96 @@ class HomeFragment : Fragment() {
+     }
+ 
+     private fun updateProjectionButtonText() {
+-        if (commManager.isConnected) {
+-            self_mode_text.text = getString(R.string.to_android_auto)
++        renderDedicatedHomeState(AapService.scanningState.value)
++    }
++
++    private fun renderDedicatedHomeState(scanning: Boolean) {
++        if (!this::wifi.isInitialized || !this::connectionBadge.isInitialized) return
++
++        val state = resolveDedicatedHomeConnectionState(
++            commManager.connectionState.value,
++            scanning
++        )
++
++        when (state) {
++            DedicatedHomeConnectionState.READY -> {
++                wifi.text = getString(R.string.dedicated_home_connect)
++                wifi.contentDescription = getString(R.string.dedicated_home_connect)
++                wifi_text_view.text = getString(R.string.dedicated_home_ready_detail)
++                connectionBadge.text = getString(R.string.dedicated_home_ready_badge)
++                connectionBadge.setTextColor(
++                    ContextCompat.getColor(requireContext(), R.color.tracer_text_secondary)
++                )
++                wifi.isEnabled = true
++                wifi.alpha = 1.0f
++            }
++
++            DedicatedHomeConnectionState.CONNECTING -> {
++                wifi.text = getString(R.string.dedicated_home_connecting)
++                wifi.contentDescription = getString(R.string.dedicated_home_connecting)
++                wifi_text_view.text = getString(R.string.dedicated_home_connecting_detail)
++                connectionBadge.text = getString(R.string.dedicated_home_connecting_badge)
++                connectionBadge.setTextColor(
++                    ContextCompat.getColor(requireContext(), R.color.tracer_connecting)
++                )
++                wifi.isEnabled = false
++                wifi.alpha = 0.72f
++            }
++
++            DedicatedHomeConnectionState.CONNECTED -> {
++                wifi.text = getString(R.string.dedicated_home_return)
++                wifi.contentDescription = getString(R.string.dedicated_home_return)
++                wifi_text_view.text = getString(R.string.dedicated_home_connected_detail)
++                connectionBadge.text = getString(R.string.dedicated_home_connected_badge)
++                connectionBadge.setTextColor(
++                    ContextCompat.getColor(requireContext(), R.color.tracer_connected)
++                )
++                wifi.isEnabled = true
++                wifi.alpha = 1.0f
++            }
++        }
++
++        audioRouteText.text = if (App.provide(requireContext()).settings.enableAudioSink) {
++            getString(R.string.dedicated_home_audio_xcover)
+         } else {
+-            self_mode_text.text = getString(R.string.self_mode)
++            getString(R.string.dedicated_home_audio_phone)
++        }
++    }
++
++    private fun showProjection() {
++        val aapIntent = Intent(requireContext(), AapProjectionActivity::class.java).apply {
++            putExtra(AapProjectionActivity.EXTRA_FOCUS, true)
+         }
++        startActivity(aapIntent)
++    }
++
++    private fun connectNativeAaToConfiguredPhone() {
++        val address = App.provide(requireContext()).settings
++            .autoStartBluetoothDeviceMacs
++            .firstOrNull()
++
++        if (address.isNullOrBlank()) {
++            showNativeAaDeviceSelector()
++            return
++        }
++
++        (requireActivity() as? MainActivity)?.beginAutoConnect(
++            "dedicated home Native-AA connect",
++            MainActivity.ConnectionUiMode.OVERLAY
++        )
++        ContextCompat.startForegroundService(
++            requireContext(),
++            Intent(requireContext(), AapService::class.java).apply {
++                action = AapService.ACTION_NATIVE_AA_POKE
++                putExtra(AapService.EXTRA_MAC, address)
++            }
++        )
+     }
+ 
+     override fun onResume() {
+         super.onResume()
+         AppLog.i("HomeFragment: onResume. isConnected=${commManager.isConnected}")
+         updateProjectionButtonText()
+-        updateButtonStyle()
+-        updateTextColors()
+         RenameNotice.maybeShow(requireActivity(), App.provide(requireContext()).settings)
+     }
+ 
+diff --git a/app/src/main/java/com/andrerinas/openheadunit/utils/Settings.kt b/app/src/main/java/com/andrerinas/openheadunit/utils/Settings.kt
+index 7535ffe03a2b6fe055bad9ed2b12fad91a32b321..1c8770e7ad27ca353cacb4e720274c70f0f681c9 100644
+--- a/app/src/main/java/com/andrerinas/openheadunit/utils/Settings.kt
++++ b/app/src/main/java/com/andrerinas/openheadunit/utils/Settings.kt
+@@ -520,7 +520,7 @@ class Settings(private val context: Context) {
+         set(value) { prefs.edit().putBoolean("auto-start-on-usb", value).apply() }
+ 
+     var autoStartOnBoot: Boolean
+-        get() = prefs.getBoolean("auto-start-on-boot", false)
++        get() = prefs.getBoolean("auto-start-on-boot", true)
+         set(value) { prefs.edit().putBoolean("auto-start-on-boot", value).apply() }
+ 
+     var autoStartOnScreenOn: Boolean
+@@ -536,7 +536,7 @@ class Settings(private val context: Context) {
+         set(value) { prefs.edit().putString("auto-start-wifi-ssid", value).apply() }
+ 
+     var listenForUsbDevices: Boolean
+-        get() = prefs.getBoolean("listen-for-usb-devices", true)
++        get() = prefs.getBoolean("listen-for-usb-devices", false)
+         set(value) { prefs.edit().putBoolean("listen-for-usb-devices", value).apply() }
+ 
+     var showToastMessages: Boolean
+@@ -861,7 +861,7 @@ class Settings(private val context: Context) {
+             } else {
+                 context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+             }
+-            return prefs.getBoolean(KEY_AUTO_START_ON_BOOT, false)
++            return prefs.getBoolean(KEY_AUTO_START_ON_BOOT, true)
+         }
+ 
+         /**
+@@ -986,7 +986,7 @@ class Settings(private val context: Context) {
+             } else {
+                 context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+             }
+-            return prefs.getBoolean(KEY_LISTEN_FOR_USB_DEVICES, true) // Default is TRUE
++            return prefs.getBoolean(KEY_LISTEN_FOR_USB_DEVICES, false)
+         }
+ 
+         fun syncListenForUsbDevicesToDeviceStorage(context: Context, enabled: Boolean) {
+diff --git a/app/src/main/java/com/andrerinas/openheadunit/utils/SystemUI.kt b/app/src/main/java/com/andrerinas/openheadunit/utils/SystemUI.kt
+index f3af13bff9eb39f32c071e431dabe348f390333c..90b6096fdf2a8bcb0199213b8623148bfed04d21 100644
+--- a/app/src/main/java/com/andrerinas/openheadunit/utils/SystemUI.kt
++++ b/app/src/main/java/com/andrerinas/openheadunit/utils/SystemUI.kt
+@@ -15,8 +15,10 @@ import com.andrerinas.openheadunit.utils.AppLog
+ object SystemUI {
+ 
+     fun apply(window: Window, root: View, mode: Settings.FullscreenMode, onInsetsChanged: (() -> Unit)? = null) {
+-        // Always keep screen on for Headunit functionality
+-        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
++        // Screen-on behavior belongs to Android's power policy. The dedicated XCover uses
++        // stay_on_while_plugged_in, which keeps the HUD visible on external power while still
++        // allowing the normal screen timeout and Device Idle to run after power is removed.
++        window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+ 
+         // Handle Display Cutout (Notch) for Android P+
+         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+@@ -198,4 +200,4 @@ object SystemUI {
+         ViewCompat.requestApplyInsets(root)
+         root.requestLayout()
+     }
+-}
+\ No newline at end of file
++}
+diff --git a/app/src/main/res/drawable-nodpi/yamaha_motor_identity.png b/app/src/main/res/drawable-nodpi/yamaha_motor_identity.png
+new file mode 100644
+index 0000000000000000000000000000000000000000..06a212f4ccfe9607570b54c0a15d38067f7b62e3
+GIT binary patch
+literal 17518
+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
+CDK~Tg
+
+literal 0
+HcmV?d00001
+
+diff --git a/app/src/main/res/drawable-nodpi/yamaha_tuning_forks.png b/app/src/main/res/drawable-nodpi/yamaha_tuning_forks.png
+new file mode 100644
+index 0000000000000000000000000000000000000000..8ca710eebcbb9a0efa2ee23c02e90ce44ffb2112
+GIT binary patch
+literal 7054
+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
+G!T$#>g*HV1
+
+literal 0
+HcmV?d00001
+
+diff --git a/app/src/main/res/drawable/bg_instrument_connection_bar.xml b/app/src/main/res/drawable/bg_instrument_connection_bar.xml
+new file mode 100644
+index 0000000000000000000000000000000000000000..9c9b9ab65e82c0b44c5e6696b16d2e9a43a51381
+--- /dev/null
++++ b/app/src/main/res/drawable/bg_instrument_connection_bar.xml
+@@ -0,0 +1,6 @@
++<?xml version="1.0" encoding="utf-8"?>
++<shape xmlns:android="http://schemas.android.com/apk/res/android">
++    <solid android:color="#E60E110D" />
++    <stroke android:width="1dp" android:color="#3E4736" />
++    <corners android:radius="7dp" />
++</shape>
+diff --git a/app/src/main/res/drawable/bg_instrument_home.xml b/app/src/main/res/drawable/bg_instrument_home.xml
+new file mode 100644
+index 0000000000000000000000000000000000000000..eff9b9b9ebe8875911fcb472ac748994674c85fc
+--- /dev/null
++++ b/app/src/main/res/drawable/bg_instrument_home.xml
+@@ -0,0 +1,20 @@
++<?xml version="1.0" encoding="utf-8"?>
++<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
++    <item>
++        <shape>
++            <solid android:color="#050506" />
++        </shape>
++    </item>
++    <item android:right="330dp" android:bottom="60dp">
++        <shape android:shape="rectangle">
++            <gradient
++                android:type="radial"
++                android:centerX="0.54"
++                android:centerY="0.52"
++                android:gradientRadius="360dp"
++                android:startColor="#303A1D"
++                android:centerColor="#12170D"
++                android:endColor="#00000000" />
++        </shape>
++    </item>
++</layer-list>
+diff --git a/app/src/main/res/drawable/bg_instrument_panel.xml b/app/src/main/res/drawable/bg_instrument_panel.xml
+new file mode 100644
+index 0000000000000000000000000000000000000000..029a5c305a54388877f0c277094230e209023db2
+--- /dev/null
++++ b/app/src/main/res/drawable/bg_instrument_panel.xml
+@@ -0,0 +1,7 @@
++<?xml version="1.0" encoding="utf-8"?>
++<shape xmlns:android="http://schemas.android.com/apk/res/android">
++    <solid android:color="#0E110D" />
++    <stroke android:width="1dp" android:color="#394132" />
++    <corners android:radius="6dp" />
++    <padding android:left="12dp" android:top="10dp" android:right="12dp" android:bottom="10dp" />
++</shape>
+diff --git a/app/src/main/res/drawable/bg_instrument_status_dot.xml b/app/src/main/res/drawable/bg_instrument_status_dot.xml
+new file mode 100644
+index 0000000000000000000000000000000000000000..10620c075b297554af47b10de1e81344e11d67ec
+--- /dev/null
++++ b/app/src/main/res/drawable/bg_instrument_status_dot.xml
+@@ -0,0 +1,4 @@
++<?xml version="1.0" encoding="utf-8"?>
++<shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="oval">
++    <solid android:color="#85888F" />
++</shape>
+diff --git a/app/src/main/res/drawable/bg_platform_unavailable.xml b/app/src/main/res/drawable/bg_platform_unavailable.xml
+new file mode 100644
+index 0000000000000000000000000000000000000000..7309a256aaa9401722f22a6fda4c7c4a8c788322
+--- /dev/null
++++ b/app/src/main/res/drawable/bg_platform_unavailable.xml
+@@ -0,0 +1,8 @@
++<?xml version="1.0" encoding="utf-8"?>
++<shape xmlns:android="http://schemas.android.com/apk/res/android">
++    <solid android:color="@color/tracer_control_idle" />
++    <stroke
++        android:width="1dp"
++        android:color="@color/tracer_control_stroke" />
++    <corners android:radius="6dp" />
++</shape>
+diff --git a/app/src/main/res/drawable/ic_android_auto_mark.xml b/app/src/main/res/drawable/ic_android_auto_mark.xml
+new file mode 100644
+index 0000000000000000000000000000000000000000..b1d2431d5108c17e118356073e6c29d923af318c
+--- /dev/null
++++ b/app/src/main/res/drawable/ic_android_auto_mark.xml
+@@ -0,0 +1,13 @@
++<?xml version="1.0" encoding="utf-8"?>
++<vector xmlns:android="http://schemas.android.com/apk/res/android"
++    android:width="24dp"
++    android:height="24dp"
++    android:viewportWidth="24"
++    android:viewportHeight="24">
++    <path
++        android:fillColor="@android:color/white"
++        android:pathData="M12,2.5L22.5,21H17.8L12,10.8L6.2,21H1.5L12,2.5Z" />
++    <path
++        android:fillColor="@color/tracer_accent"
++        android:pathData="M11,9.1H13V18.3H11Z" />
++</vector>
+diff --git a/app/src/main/res/drawable/ic_carplay_mark.xml b/app/src/main/res/drawable/ic_carplay_mark.xml
+new file mode 100644
+index 0000000000000000000000000000000000000000..85adeb162baae6b450c144b1f7f1bdbac178fc54
+--- /dev/null
++++ b/app/src/main/res/drawable/ic_carplay_mark.xml
+@@ -0,0 +1,10 @@
++<?xml version="1.0" encoding="utf-8"?>
++<vector xmlns:android="http://schemas.android.com/apk/res/android"
++    android:width="19dp"
++    android:height="24dp"
++    android:viewportWidth="384"
++    android:viewportHeight="512">
++    <path
++        android:fillColor="@color/tracer_text_secondary"
++        android:pathData="M318.7,268.7C318.5,232 335.1,204.3 368.7,183.9C349.9,157 321.5,142.2 284,139.3C248.5,136.5 209.7,160 195.5,160C180.5,160 146.1,140.3 119.1,140.3C63.3,141.2 4,184.8 4,273.5C4,299.2 8.8,325.5 18.3,352.4C31.1,389.1 77.3,479.1 125.5,477.6C150.7,477 168.5,459.7 201.3,459.7C233.1,459.7 249.6,477.6 277.6,477.6C326.2,476.9 368,395.1 380.2,358.3C315,327.6 318.7,270.4 318.7,268.7ZM260.2,104.5C287.5,72.1 285,42.6 284.2,32C260.1,33.4 232.2,48.4 216.3,66.9C198.8,86.7 188.5,111.2 190.7,138.8C216.8,140.8 240.6,127.4 260.2,104.5Z" />
++</vector>
+diff --git a/app/src/main/res/drawable/ic_tire_front.xml b/app/src/main/res/drawable/ic_tire_front.xml
+new file mode 100644
+index 0000000000000000000000000000000000000000..96ad0b9281eb625f2b5248a32ff11fc93949766e
+--- /dev/null
++++ b/app/src/main/res/drawable/ic_tire_front.xml
+@@ -0,0 +1,19 @@
++<?xml version="1.0" encoding="utf-8"?>
++<vector xmlns:android="http://schemas.android.com/apk/res/android"
++    android:width="28dp"
++    android:height="64dp"
++    android:viewportWidth="48"
++    android:viewportHeight="104">
++    <path
++        android:fillColor="@android:color/transparent"
++        android:pathData="M24,2 C14,2 8,9 8,20 L8,84 C8,95 14,102 24,102 C34,102 40,95 40,84 L40,20 C40,9 34,2 24,2 Z"
++        android:strokeColor="#A3A6AC"
++        android:strokeLineJoin="round"
++        android:strokeWidth="4" />
++    <path
++        android:fillColor="@android:color/transparent"
++        android:pathData="M16,20 L32,20 M14,38 L34,38 M14,56 L34,56 M14,74 L34,74 M16,90 L32,90"
++        android:strokeColor="#55585E"
++        android:strokeLineCap="round"
++        android:strokeWidth="3" />
++</vector>
+diff --git a/app/src/main/res/drawable/ic_tire_rear.xml b/app/src/main/res/drawable/ic_tire_rear.xml
+new file mode 100644
+index 0000000000000000000000000000000000000000..a215c07e0f07313fb2a4bac48e98b12d6551e164
+--- /dev/null
++++ b/app/src/main/res/drawable/ic_tire_rear.xml
+@@ -0,0 +1,19 @@
++<?xml version="1.0" encoding="utf-8"?>
++<vector xmlns:android="http://schemas.android.com/apk/res/android"
++    android:width="31dp"
++    android:height="64dp"
++    android:viewportWidth="52"
++    android:viewportHeight="104">
++    <path
++        android:fillColor="@android:color/transparent"
++        android:pathData="M26,2 C14,2 7,10 7,22 L7,82 C7,95 14,102 26,102 C38,102 45,95 45,82 L45,22 C45,10 38,2 26,2 Z"
++        android:strokeColor="#A3A6AC"
++        android:strokeLineJoin="round"
++        android:strokeWidth="5" />
++    <path
++        android:fillColor="@android:color/transparent"
++        android:pathData="M16,20 L36,20 M13,38 L39,38 M13,56 L39,56 M13,74 L39,74 M16,90 L36,90"
++        android:strokeColor="#55585E"
++        android:strokeLineCap="round"
++        android:strokeWidth="3" />
++</vector>
+diff --git a/app/src/main/res/drawable/splash_background.xml b/app/src/main/res/drawable/splash_background.xml
+index 701f166d41f4ce33964b1ef4d7a54d1ddb0dfc6d..acca0ab8ea0b461eaaa8b42c1664a171b38faab4 100644
+--- a/app/src/main/res/drawable/splash_background.xml
++++ b/app/src/main/res/drawable/splash_background.xml
+@@ -1,12 +1,13 @@
+ <?xml version="1.0" encoding="utf-8"?>
+ <layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+-    <item android:drawable="@color/color_projection_blue" />
++    <item android:drawable="@color/extreme_dark_background" />
+     <item
+-        android:width="160dp"
+-        android:height="160dp"
++        android:width="350dp"
++        android:height="80dp"
+         android:gravity="center">
+         <bitmap
+             android:gravity="center"
+-            android:src="@mipmap/ic_launcher_playstore" />
++            android:src="@drawable/yamaha_motor_identity"
++            android:tint="@color/tracer_accent" />
+     </item>
+-</layer-list>
+\ No newline at end of file
++</layer-list>
+diff --git a/app/src/main/res/drawable/yamaha_tuning_forks_tinted.xml b/app/src/main/res/drawable/yamaha_tuning_forks_tinted.xml
+new file mode 100644
+index 0000000000000000000000000000000000000000..30810c95d1ba44cfb0dbf7bb53fc74cadb9c4ff5
+--- /dev/null
++++ b/app/src/main/res/drawable/yamaha_tuning_forks_tinted.xml
+@@ -0,0 +1,5 @@
++<?xml version="1.0" encoding="utf-8"?>
++<bitmap xmlns:android="http://schemas.android.com/apk/res/android"
++    android:gravity="center"
++    android:src="@drawable/yamaha_tuning_forks"
++    android:tint="@color/tracer_accent" />
+diff --git a/app/src/main/res/layout-port/fragment_home.xml b/app/src/main/res/layout-port/fragment_home.xml
+index ad6b3d35b8ba428cf6a1bcf9693b339b1884af25..dae81078254392172f5b0d9700f699678eaf0ddf 100644
+--- a/app/src/main/res/layout-port/fragment_home.xml
++++ b/app/src/main/res/layout-port/fragment_home.xml
+@@ -282,4 +282,19 @@
+         android:textColor="@android:color/white"
+         app:cornerRadius="8dp" />
+ 
++    <!-- HomeFragment binds these dedicated-landscape status views before the
++         requested orientation has fully settled. Keep hidden counterparts in
++         the portrait resource so a transitional inflation cannot crash. -->
++    <TextView
++        android:id="@+id/connection_badge"
++        android:layout_width="1dp"
++        android:layout_height="1dp"
++        android:visibility="gone" />
++
++    <TextView
++        android:id="@+id/audio_route_text"
++        android:layout_width="1dp"
++        android:layout_height="1dp"
++        android:visibility="gone" />
++
+ </androidx.constraintlayout.widget.ConstraintLayout>
+diff --git a/app/src/main/res/layout/activity_main.xml b/app/src/main/res/layout/activity_main.xml
+index 0737803d7e06af0d40a2e0e602e80c20dafbd961..fba1b0e08f91368957ff8f1f3a0a0876437d0ce4 100644
+--- a/app/src/main/res/layout/activity_main.xml
++++ b/app/src/main/res/layout/activity_main.xml
+@@ -176,12 +176,12 @@
+ 
+     </LinearLayout>
+ 
+-    <!-- Splash Overlay for controlled delay and branding text -->
++    <!-- Dedicated Yamaha/Tracer splash shown during the controlled startup delay. -->
+     <RelativeLayout
+         android:id="@+id/splash_overlay"
+         android:layout_width="match_parent"
+         android:layout_height="match_parent"
+-        android:background="@color/color_projection_blue"
++        android:background="@drawable/bg_instrument_home"
+         android:clickable="true"
+         android:focusable="true"
+         android:gravity="center">
+@@ -193,27 +193,40 @@
+             android:orientation="vertical">
+ 
+             <ImageView
+-                android:layout_width="160dp"
+-                android:layout_height="160dp"
+-                android:src="@mipmap/ic_launcher_playstore" />
++                android:layout_width="350dp"
++                android:layout_height="80dp"
++                android:adjustViewBounds="true"
++                android:contentDescription="@string/yamaha_motor_logo_description"
++                android:scaleType="fitCenter"
++                android:src="@drawable/yamaha_motor_identity"
++                app:tint="@color/tracer_accent" />
++
++            <View
++                android:layout_width="88dp"
++                android:layout_height="2dp"
++                android:layout_marginTop="22dp"
++                android:background="@color/tracer_accent" />
+ 
+             <TextView
+                 android:layout_width="wrap_content"
+                 android:layout_height="wrap_content"
+-                android:layout_marginTop="-10dp"
+-                android:text="OPEN"
+-                android:textColor="@color/splash_text_white"
+-                android:textSize="35sp"
++                android:layout_marginTop="18dp"
++                android:fontFamily="sans-serif-condensed"
++                android:letterSpacing="0.16"
++                android:text="@string/dedicated_home_vehicle_short"
++                android:textColor="@android:color/white"
++                android:textSize="24sp"
+                 android:textStyle="bold" />
+ 
+             <TextView
+                 android:layout_width="wrap_content"
+                 android:layout_height="wrap_content"
+-                android:layout_marginTop="-4dp"
+-                android:text="Headunit"
+-                android:textAllCaps="true"
+-                android:textColor="@color/splash_text_revived"
+-                android:textSize="35sp"
++                android:layout_marginTop="7dp"
++                android:fontFamily="sans-serif-medium"
++                android:letterSpacing="0.28"
++                android:text="@string/dedicated_home_subtitle_short"
++                android:textColor="@color/tracer_text_muted"
++                android:textSize="9sp"
+                 android:textStyle="bold" />
+ 
+         </LinearLayout>
+diff --git a/app/src/main/res/layout/fragment_home.xml b/app/src/main/res/layout/fragment_home.xml
+index 9d4d2d3b481e63f76b3e4ce456a26e00f28da846..88fc47ab893508247a39c04ad780314421adce60 100644
+--- a/app/src/main/res/layout/fragment_home.xml
++++ b/app/src/main/res/layout/fragment_home.xml
+@@ -2,187 +2,600 @@
+ <androidx.constraintlayout.widget.ConstraintLayout
+     xmlns:android="http://schemas.android.com/apk/res/android"
+     xmlns:app="http://schemas.android.com/apk/res-auto"
++    xmlns:tools="http://schemas.android.com/tools"
+     android:id="@+id/main_buttons_container"
+     android:layout_width="match_parent"
+-    android:layout_height="match_parent">
++    android:layout_height="match_parent"
++    android:background="@drawable/bg_instrument_home"
++    android:paddingStart="24dp"
++    android:paddingTop="12dp"
++    android:paddingEnd="24dp"
++    android:paddingBottom="12dp">
+ 
+-    <androidx.constraintlayout.widget.ConstraintLayout
+-        android:id="@+id/main_buttons_layout"
+-        android:layout_width="0dp"
++    <androidx.constraintlayout.widget.Guideline
++        android:id="@+id/tpms_guideline"
++        android:layout_width="wrap_content"
++        android:layout_height="wrap_content"
++        android:orientation="vertical"
++        app:layout_constraintGuide_percent="0.63" />
++
++    <ImageView
++        android:id="@+id/yamaha_identity"
++        android:layout_width="126dp"
++        android:layout_height="30dp"
++        android:adjustViewBounds="true"
++        android:contentDescription="@string/yamaha_motor_logo_description"
++        android:scaleType="fitCenter"
++        android:src="@drawable/yamaha_motor_identity"
++        app:tint="@color/tracer_accent"
++        app:layout_constraintStart_toStartOf="parent"
++        app:layout_constraintTop_toTopOf="parent" />
++
++    <View
++        android:id="@+id/brand_separator"
++        android:layout_width="1dp"
++        android:layout_height="32dp"
++        android:layout_marginStart="13dp"
++        android:background="#46484D"
++        app:layout_constraintStart_toEndOf="@id/yamaha_identity"
++        app:layout_constraintTop_toTopOf="@id/yamaha_identity" />
++
++    <TextView
++        android:id="@+id/vehicle_title"
++        android:layout_width="wrap_content"
+         android:layout_height="wrap_content"
+-        android:padding="16dp"
+-        app:layout_constraintWidth_max="1200dp"
++        android:layout_marginStart="14dp"
++        android:fontFamily="sans-serif-condensed"
++        android:letterSpacing="0.12"
++        android:text="@string/dedicated_home_vehicle_short"
++        android:textColor="@android:color/white"
++        android:textSize="19sp"
++        android:textStyle="bold"
++        app:layout_constraintStart_toEndOf="@id/brand_separator"
++        app:layout_constraintTop_toTopOf="@id/brand_separator" />
++
++    <TextView
++        android:id="@+id/vehicle_subtitle"
++        android:layout_width="wrap_content"
++        android:layout_height="wrap_content"
++        android:layout_marginStart="14dp"
++        android:fontFamily="sans-serif-medium"
++        android:letterSpacing="0.22"
++        android:text="@string/dedicated_home_subtitle_short"
++        android:textColor="@color/tracer_text_muted"
++        android:textSize="8sp"
++        app:layout_constraintStart_toEndOf="@id/brand_separator"
++        app:layout_constraintTop_toBottomOf="@id/vehicle_title" />
++
++    <com.google.android.material.button.MaterialButton
++        android:id="@+id/settings_button"
++        style="@style/Widget.Material3.Button.OutlinedButton"
++        android:layout_width="44dp"
++        android:layout_height="44dp"
++        android:contentDescription="@string/settings"
++        android:insetLeft="0dp"
++        android:insetTop="0dp"
++        android:insetRight="0dp"
++        android:insetBottom="0dp"
++        android:minWidth="0dp"
++        android:minHeight="0dp"
++        android:padding="0dp"
++        android:text=""
++        app:backgroundTint="#0B0C0E"
++        app:cornerRadius="22dp"
++        app:icon="@drawable/ic_settings_white"
++        app:iconGravity="textStart"
++        app:iconPadding="0dp"
++        app:iconSize="21dp"
++        app:iconTint="@color/tracer_text_secondary"
++        app:layout_constraintEnd_toEndOf="parent"
+         app:layout_constraintTop_toTopOf="parent"
+-        app:layout_constraintBottom_toBottomOf="parent"
++        app:strokeColor="#3C3F45"
++        app:strokeWidth="1dp" />
++
++    <View
++        android:id="@+id/header_divider"
++        android:layout_width="0dp"
++        android:layout_height="1dp"
++        android:layout_marginTop="8dp"
++        android:background="#303238"
++        app:layout_constraintEnd_toEndOf="parent"
+         app:layout_constraintStart_toStartOf="parent"
++        app:layout_constraintTop_toBottomOf="@id/settings_button" />
++
++    <View
++        android:id="@+id/header_accent"
++        android:layout_width="106dp"
++        android:layout_height="2dp"
++        android:background="@color/tracer_accent"
++        app:layout_constraintStart_toStartOf="@id/header_divider"
++        app:layout_constraintTop_toTopOf="@id/header_divider" />
++
++    <ImageView
++        android:id="@+id/tracer_hero"
++        android:layout_width="0dp"
++        android:layout_height="0dp"
++        android:layout_marginTop="8dp"
++        android:layout_marginEnd="18dp"
++        android:layout_marginBottom="6dp"
++        android:contentDescription="@string/tracer_900_gt_image_description"
++        android:scaleType="fitCenter"
++        android:src="@drawable/tracer_900_gt_hero"
++        app:layout_constraintBottom_toTopOf="@id/connection_bar"
++        app:layout_constraintEnd_toStartOf="@id/tpms_guideline"
++        app:layout_constraintStart_toStartOf="parent"
++        app:layout_constraintTop_toBottomOf="@id/header_divider" />
++
++    <View
++        android:id="@+id/tpms_vertical_divider"
++        android:layout_width="1dp"
++        android:layout_height="0dp"
++        android:layout_marginTop="16dp"
++        android:layout_marginBottom="12dp"
++        android:background="#303238"
++        app:layout_constraintBottom_toTopOf="@id/connection_bar"
++        app:layout_constraintStart_toStartOf="@id/tpms_guideline"
++        app:layout_constraintTop_toBottomOf="@id/header_divider" />
++
++    <LinearLayout
++        android:id="@+id/tpms_panel"
++        android:layout_width="0dp"
++        android:layout_height="0dp"
++        android:layout_marginStart="18dp"
++        android:layout_marginTop="12dp"
++        android:layout_marginBottom="10dp"
++        android:orientation="vertical"
++        app:layout_constraintBottom_toTopOf="@id/connection_bar"
+         app:layout_constraintEnd_toEndOf="parent"
+-        app:layout_constraintVertical_bias="0.4">
++        app:layout_constraintStart_toEndOf="@id/tpms_vertical_divider"
++        app:layout_constraintTop_toBottomOf="@id/header_divider">
+ 
+-        <!-- Self Mode Button -->
+-        <com.google.android.material.button.MaterialButton
+-            android:id="@+id/self_mode_button"
+-            android:layout_width="0dp"
++        <LinearLayout
++            android:layout_width="match_parent"
++            android:layout_height="26dp"
++            android:gravity="center_vertical"
++            android:orientation="horizontal">
++
++            <TextView
++                android:layout_width="wrap_content"
++                android:layout_height="wrap_content"
++                android:fontFamily="sans-serif-medium"
++                android:letterSpacing="0.14"
++                android:text="@string/dedicated_home_tpms_label"
++                android:textColor="@android:color/white"
++                android:textSize="16sp"
++                android:textStyle="bold" />
++
++            <Space
++                android:layout_width="0dp"
++                android:layout_height="1dp"
++                android:layout_weight="1" />
++
++            <View
++                android:layout_width="6dp"
++                android:layout_height="6dp"
++                android:background="@drawable/bg_instrument_status_dot" />
++
++            <TextView
++                android:id="@+id/tpms_status_text"
++                android:layout_width="wrap_content"
++                android:layout_height="wrap_content"
++                android:layout_marginStart="8dp"
++                android:fontFamily="sans-serif-medium"
++                android:letterSpacing="0.12"
++                android:text="@string/dedicated_home_tpms_unconfigured_short"
++                android:textColor="@color/tracer_text_muted"
++                android:textSize="8sp"
++                android:textStyle="bold" />
++        </LinearLayout>
++
++        <androidx.constraintlayout.widget.ConstraintLayout
++            android:layout_width="match_parent"
++            android:layout_height="0dp"
++            android:layout_marginTop="6dp"
++            android:layout_weight="1"
++            android:background="@drawable/bg_instrument_panel"
++            android:minHeight="80dp">
++
++            <ImageView
++                android:id="@+id/front_tire_icon"
++                android:layout_width="27dp"
++                android:layout_height="62dp"
++                android:contentDescription="@string/dedicated_home_tpms_front"
++                android:src="@drawable/ic_tire_front"
++                app:layout_constraintBottom_toBottomOf="parent"
++                app:layout_constraintStart_toStartOf="parent"
++                app:layout_constraintTop_toTopOf="parent" />
++
++            <TextView
++                android:id="@+id/front_tire_label"
++                android:layout_width="wrap_content"
++                android:layout_height="wrap_content"
++                android:layout_marginStart="12dp"
++                android:fontFamily="sans-serif-medium"
++                android:letterSpacing="0.1"
++                android:text="@string/dedicated_home_tpms_front"
++                android:textColor="@color/tracer_text_secondary"
++                android:textSize="8sp"
++                android:textStyle="bold"
++                app:layout_constraintStart_toEndOf="@id/front_tire_icon"
++                app:layout_constraintTop_toTopOf="@id/front_tire_icon" />
++
++            <TextView
++                android:id="@+id/front_pressure"
++                android:layout_width="wrap_content"
++                android:layout_height="wrap_content"
++                android:layout_marginStart="12dp"
++                android:fontFamily="sans-serif"
++                android:text="@string/dedicated_home_tpms_placeholder"
++                android:textColor="@android:color/white"
++                android:textSize="27sp"
++                android:textStyle="bold"
++                app:layout_constraintBottom_toBottomOf="@id/front_tire_icon"
++                app:layout_constraintStart_toEndOf="@id/front_tire_icon" />
++
++            <TextView
++                android:id="@+id/front_pressure_unit"
++                android:layout_width="wrap_content"
++                android:layout_height="wrap_content"
++                android:layout_marginStart="6dp"
++                android:text="@string/dedicated_home_tpms_unit"
++                android:textColor="@color/tracer_text_muted"
++                android:textSize="10sp"
++                android:textStyle="bold"
++                app:layout_constraintBaseline_toBaselineOf="@id/front_pressure"
++                app:layout_constraintStart_toEndOf="@id/front_pressure" />
++
++            <View
++                android:id="@+id/front_value_divider"
++                android:layout_width="1dp"
++                android:layout_height="0dp"
++                android:layout_marginTop="14dp"
++                android:layout_marginBottom="14dp"
++                android:background="#303238"
++                app:layout_constraintBottom_toBottomOf="parent"
++                app:layout_constraintEnd_toStartOf="@id/front_temperature_label"
++                app:layout_constraintHorizontal_bias="0.55"
++                app:layout_constraintStart_toEndOf="@id/front_pressure_unit"
++                app:layout_constraintTop_toTopOf="parent" />
++
++            <TextView
++                android:id="@+id/front_temperature_label"
++                android:layout_width="wrap_content"
++                android:layout_height="wrap_content"
++                android:layout_marginEnd="12dp"
++                android:fontFamily="sans-serif-medium"
++                android:letterSpacing="0.08"
++                android:text="@string/dedicated_home_tpms_temperature"
++                android:textColor="@color/tracer_text_muted"
++                android:textSize="7sp"
++                android:textStyle="bold"
++                app:layout_constraintEnd_toEndOf="parent"
++                app:layout_constraintTop_toTopOf="@id/front_tire_icon" />
++
++            <TextView
++                android:layout_width="wrap_content"
++                android:layout_height="wrap_content"
++                android:layout_marginEnd="12dp"
++                android:text="@string/dedicated_home_tpms_temperature_placeholder"
++                android:textColor="@color/tracer_text_secondary"
++                android:textSize="17sp"
++                android:textStyle="bold"
++                app:layout_constraintBottom_toBottomOf="@id/front_tire_icon"
++                app:layout_constraintEnd_toEndOf="parent" />
++        </androidx.constraintlayout.widget.ConstraintLayout>
++
++        <androidx.constraintlayout.widget.ConstraintLayout
++            android:layout_width="match_parent"
+             android:layout_height="0dp"
+-            android:elevation="6dp"
+-            app:layout_constraintDimensionRatio="1:1"
+-            app:layout_constraintTop_toTopOf="parent"
++            android:layout_marginTop="7dp"
++            android:layout_weight="1"
++            android:background="@drawable/bg_instrument_panel"
++            android:minHeight="80dp">
++
++            <ImageView
++                android:id="@+id/rear_tire_icon"
++                android:layout_width="30dp"
++                android:layout_height="64dp"
++                android:contentDescription="@string/dedicated_home_tpms_rear"
++                android:src="@drawable/ic_tire_rear"
++                app:layout_constraintBottom_toBottomOf="parent"
++                app:layout_constraintStart_toStartOf="parent"
++                app:layout_constraintTop_toTopOf="parent" />
++
++            <TextView
++                android:id="@+id/rear_tire_label"
++                android:layout_width="wrap_content"
++                android:layout_height="wrap_content"
++                android:layout_marginStart="10dp"
++                android:fontFamily="sans-serif-medium"
++                android:letterSpacing="0.1"
++                android:text="@string/dedicated_home_tpms_rear"
++                android:textColor="@color/tracer_text_secondary"
++                android:textSize="8sp"
++                android:textStyle="bold"
++                app:layout_constraintStart_toEndOf="@id/rear_tire_icon"
++                app:layout_constraintTop_toTopOf="@id/rear_tire_icon" />
++
++            <TextView
++                android:id="@+id/rear_pressure"
++                android:layout_width="wrap_content"
++                android:layout_height="wrap_content"
++                android:layout_marginStart="10dp"
++                android:fontFamily="sans-serif"
++                android:text="@string/dedicated_home_tpms_placeholder"
++                android:textColor="@android:color/white"
++                android:textSize="27sp"
++                android:textStyle="bold"
++                app:layout_constraintBottom_toBottomOf="@id/rear_tire_icon"
++                app:layout_constraintStart_toEndOf="@id/rear_tire_icon" />
++
++            <TextView
++                android:id="@+id/rear_pressure_unit"
++                android:layout_width="wrap_content"
++                android:layout_height="wrap_content"
++                android:layout_marginStart="6dp"
++                android:text="@string/dedicated_home_tpms_unit"
++                android:textColor="@color/tracer_text_muted"
++                android:textSize="10sp"
++                android:textStyle="bold"
++                app:layout_constraintBaseline_toBaselineOf="@id/rear_pressure"
++                app:layout_constraintStart_toEndOf="@id/rear_pressure" />
++
++            <View
++                android:id="@+id/rear_value_divider"
++                android:layout_width="1dp"
++                android:layout_height="0dp"
++                android:layout_marginTop="14dp"
++                android:layout_marginBottom="14dp"
++                android:background="#303238"
++                app:layout_constraintBottom_toBottomOf="parent"
++                app:layout_constraintEnd_toStartOf="@id/rear_temperature_label"
++                app:layout_constraintHorizontal_bias="0.55"
++                app:layout_constraintStart_toEndOf="@id/rear_pressure_unit"
++                app:layout_constraintTop_toTopOf="parent" />
++
++            <TextView
++                android:id="@+id/rear_temperature_label"
++                android:layout_width="wrap_content"
++                android:layout_height="wrap_content"
++                android:layout_marginEnd="12dp"
++                android:fontFamily="sans-serif-medium"
++                android:letterSpacing="0.08"
++                android:text="@string/dedicated_home_tpms_temperature"
++                android:textColor="@color/tracer_text_muted"
++                android:textSize="7sp"
++                android:textStyle="bold"
++                app:layout_constraintEnd_toEndOf="parent"
++                app:layout_constraintTop_toTopOf="@id/rear_tire_icon" />
++
++            <TextView
++                android:layout_width="wrap_content"
++                android:layout_height="wrap_content"
++                android:layout_marginEnd="12dp"
++                android:text="@string/dedicated_home_tpms_temperature_placeholder"
++                android:textColor="@color/tracer_text_secondary"
++                android:textSize="17sp"
++                android:textStyle="bold"
++                app:layout_constraintBottom_toBottomOf="@id/rear_tire_icon"
++                app:layout_constraintEnd_toEndOf="parent" />
++        </androidx.constraintlayout.widget.ConstraintLayout>
++
++        <LinearLayout
++            android:layout_width="match_parent"
++            android:layout_height="25dp"
++            android:gravity="bottom|start"
++            android:orientation="horizontal">
++
++            <TextView
++                android:layout_width="wrap_content"
++                android:layout_height="wrap_content"
++                android:fontFamily="sans-serif-medium"
++                android:letterSpacing="0.1"
++                android:text="@string/dedicated_home_audio_label"
++                android:textColor="@color/tracer_text_muted"
++                android:textSize="7sp"
++                android:textStyle="bold" />
++
++            <TextView
++                android:id="@+id/audio_route_text"
++                android:layout_width="wrap_content"
++                android:layout_height="wrap_content"
++                android:layout_marginStart="8dp"
++                android:fontFamily="sans-serif-medium"
++                android:text="@string/dedicated_home_audio_phone"
++                android:textColor="@color/tracer_text_secondary"
++                android:textSize="9sp"
++                android:textStyle="bold" />
++        </LinearLayout>
++    </LinearLayout>
++
++    <androidx.constraintlayout.widget.ConstraintLayout
++        android:id="@+id/connection_bar"
++        android:layout_width="0dp"
++        android:layout_height="66dp"
++        android:background="@drawable/bg_instrument_connection_bar"
++        app:layout_constraintBottom_toBottomOf="parent"
++        app:layout_constraintEnd_toEndOf="parent"
++        app:layout_constraintStart_toStartOf="parent">
++
++        <View
++            android:id="@+id/connection_dot"
++            android:layout_width="7dp"
++            android:layout_height="7dp"
++            android:layout_marginStart="17dp"
++            android:background="@drawable/bg_instrument_status_dot"
++            app:layout_constraintBottom_toBottomOf="parent"
+             app:layout_constraintStart_toStartOf="parent"
+-            app:layout_constraintEnd_toStartOf="@+id/usb_button"
+-            app:layout_constraintHorizontal_chainStyle="spread"
+-            android:layout_margin="40dp"
+-            app:backgroundTint="@null"
+-            android:background="@drawable/gradient_blue"
+-            app:iconGravity="textStart"
+-            app:icon="@drawable/ic_launch_white"
+-            app:iconTint="#ffffff"
+-            app:iconSize="72dp"
+-            app:iconPadding="0dp"
+-            android:paddingTop="0dp"
+-            android:paddingBottom="0dp" />
++            app:layout_constraintTop_toTopOf="parent" />
++
+         <TextView
+-            android:id="@+id/self_mode_text"
+-            android:layout_width="0dp"
++            android:id="@+id/projection_title"
++            android:layout_width="wrap_content"
+             android:layout_height="wrap_content"
+-            app:layout_constraintTop_toBottomOf="@+id/self_mode_button"
+-            app:layout_constraintStart_toStartOf="@+id/self_mode_button"
+-            app:layout_constraintEnd_toEndOf="@+id/self_mode_button"
+-            android:text="@string/self_mode"
+-            android:textColor="@color/text_primary"
+-            android:shadowColor="@color/text_shadow"
+-            android:shadowDx="0"
+-            android:shadowDy="0"
+-            android:shadowRadius="8"
+-            android:textSize="18sp"
+-            android:textFontWeight="700"
+-            android:gravity="center_horizontal"
+-            android:layout_marginTop="4dp" />
+-
+-        <!-- USB Button -->
+-        <com.google.android.material.button.MaterialButton
+-            android:id="@+id/usb_button"
+-            android:layout_width="0dp"
+-            android:layout_height="0dp"
+-            android:elevation="6dp"
+-            app:layout_constraintDimensionRatio="1:1"
+-            app:layout_constraintTop_toTopOf="parent"
+-            app:layout_constraintStart_toEndOf="@+id/self_mode_button"
+-            app:layout_constraintEnd_toStartOf="@+id/wifi_button"
+-            android:layout_margin="40dp"
+-            app:backgroundTint="@null"
+-            android:background="@drawable/gradient_orange"
+-            app:iconGravity="textStart"
+-            app:icon="@drawable/ic_usb_white"
+-            app:iconTint="#ffffff"
+-            app:iconSize="72dp"
+-            app:iconPadding="0dp"
+-            android:paddingTop="0dp"
+-            android:paddingBottom="0dp" />
++            android:layout_marginStart="14dp"
++            android:fontFamily="sans-serif-medium"
++            android:text="@string/dedicated_home_projection_title"
++            android:textColor="@android:color/white"
++            android:textSize="14sp"
++            android:textStyle="bold"
++            app:layout_constraintStart_toEndOf="@id/connection_dot"
++            app:layout_constraintTop_toTopOf="@id/platform_actions" />
++
+         <TextView
+-            android:id="@+id/usb_text"
+-            android:layout_width="0dp"
++            android:id="@+id/connection_badge"
++            android:layout_width="wrap_content"
+             android:layout_height="wrap_content"
+-            app:layout_constraintTop_toBottomOf="@+id/usb_button"
+-            app:layout_constraintStart_toStartOf="@+id/usb_button"
+-            app:layout_constraintEnd_toEndOf="@+id/usb_button"
+-            android:text="@string/usb"
+-            android:textColor="@color/text_primary"
+-            android:shadowColor="@color/text_shadow"
+-            android:shadowDx="0"
+-            android:shadowDy="0"
+-            android:shadowRadius="8"
+-            android:textSize="18sp"
+-            android:textFontWeight="700"
+-            android:gravity="center_horizontal"
+-            android:layout_marginTop="4dp" />
+-
+-        <!-- WiFi Button -->
+-        <com.google.android.material.button.MaterialButton
+-            android:id="@+id/wifi_button"
+-            android:layout_width="0dp"
+-            android:layout_height="0dp"
+-            android:elevation="6dp"
+-            app:layout_constraintDimensionRatio="1:1"
+-            app:layout_constraintTop_toTopOf="parent"
+-            app:layout_constraintStart_toEndOf="@+id/usb_button"
+-            app:layout_constraintEnd_toStartOf="@+id/settings_button"
+-            android:layout_margin="40dp"
+-            app:backgroundTint="@null"
+-            android:background="@drawable/gradient_purple"
+-            app:iconGravity="textStart"
+-            app:icon="@drawable/ic_network_wifi_white"
+-            app:iconTint="#ffffff"
+-            app:iconSize="72dp"
+-            app:iconPadding="0dp"
+-            android:paddingTop="0dp"
+-            android:paddingBottom="0dp" />
++            android:layout_marginStart="11dp"
++            android:fontFamily="sans-serif-medium"
++            android:letterSpacing="0.1"
++            android:text="@string/dedicated_home_ready_badge"
++            android:textColor="@color/tracer_text_secondary"
++            android:textSize="7sp"
++            android:textStyle="bold"
++            app:layout_constraintBaseline_toBaselineOf="@id/projection_title"
++            app:layout_constraintStart_toEndOf="@id/projection_title" />
++
+         <TextView
+             android:id="@+id/wifi_text"
+             android:layout_width="0dp"
+             android:layout_height="wrap_content"
+-            app:layout_constraintTop_toBottomOf="@+id/wifi_button"
+-            app:layout_constraintStart_toStartOf="@+id/wifi_button"
+-            app:layout_constraintEnd_toEndOf="@+id/wifi_button"
+-            android:text="@string/wifi"
+-            android:textColor="@color/text_primary"
+-            android:shadowColor="@color/text_shadow"
+-            android:shadowDx="0"
+-            android:shadowDy="0"
+-            android:shadowRadius="8"
+-            android:textSize="18sp"
+-            android:textFontWeight="700"
+-            android:gravity="center_horizontal"
+-            android:layout_marginTop="4dp" />
+-
+-        <!-- Settings Button -->
+-        <com.google.android.material.button.MaterialButton
+-            android:id="@+id/settings_button"
+-            android:layout_width="0dp"
+-            android:layout_height="0dp"
+-            android:elevation="6dp"
+-            app:iconGravity="textStart"
+-            app:layout_constraintDimensionRatio="1:1"
+-            app:layout_constraintTop_toTopOf="parent"
+-            app:layout_constraintStart_toEndOf="@+id/wifi_button"
++            android:layout_marginTop="2dp"
++            android:layout_marginEnd="16dp"
++            android:ellipsize="end"
++            android:fontFamily="sans-serif"
++            android:maxLines="1"
++            android:text="@string/dedicated_home_ready_detail"
++            android:textColor="@color/tracer_text_muted"
++            android:textSize="10sp"
++            app:layout_constraintEnd_toStartOf="@id/platform_actions"
++            app:layout_constraintStart_toStartOf="@id/projection_title"
++            app:layout_constraintTop_toBottomOf="@id/projection_title" />
++
++        <LinearLayout
++            android:id="@+id/platform_actions"
++            android:layout_width="310dp"
++            android:layout_height="48dp"
++            android:layout_marginEnd="9dp"
++            android:gravity="center_vertical"
++            android:orientation="horizontal"
++            app:layout_constraintBottom_toBottomOf="parent"
+             app:layout_constraintEnd_toEndOf="parent"
+-            android:layout_margin="40dp"
+-            app:backgroundTint="@null"
+-            android:background="@drawable/gradient_darkblue"
+-            app:icon="@drawable/ic_settings_white"
+-            app:iconTint="#ffffff"
+-            app:iconSize="72dp"
+-            app:iconPadding="0dp"
+-            android:paddingTop="0dp"
+-            android:paddingBottom="0dp" />
+-        <TextView
+-            android:id="@+id/settings_text"
+-            android:layout_width="0dp"
+-            android:layout_height="wrap_content"
+-            app:layout_constraintTop_toBottomOf="@+id/settings_button"
+-            app:layout_constraintStart_toStartOf="@+id/settings_button"
+-            app:layout_constraintEnd_toEndOf="@+id/settings_button"
+-            android:text="@string/settings"
+-            android:textColor="@color/text_primary"
+-            android:shadowColor="@color/text_shadow"
+-            android:shadowDx="0"
+-            android:shadowDy="0"
+-            android:shadowRadius="8"
+-            android:textSize="18sp"
+-            android:textFontWeight="700"
+-            android:gravity="center_horizontal"
+-            android:layout_marginTop="4dp" />
++            app:layout_constraintTop_toTopOf="parent">
++
++            <LinearLayout
++                android:id="@+id/carplay_card"
++                android:layout_width="118dp"
++                android:layout_height="48dp"
++                android:layout_marginEnd="7dp"
++                android:alpha="0.58"
++                android:background="@drawable/bg_platform_unavailable"
++                android:clickable="false"
++                android:contentDescription="@string/dedicated_home_carplay_unavailable_description"
++                android:enabled="false"
++                android:focusable="false"
++                android:gravity="center"
++                android:importantForAccessibility="yes"
++                android:orientation="horizontal"
++                android:paddingHorizontal="10dp">
+ 
++                <ImageView
++                    android:layout_width="17dp"
++                    android:layout_height="21dp"
++                    android:contentDescription="@null"
++                    android:importantForAccessibility="no"
++                    android:src="@drawable/ic_carplay_mark" />
++
++                <LinearLayout
++                    android:layout_width="wrap_content"
++                    android:layout_height="wrap_content"
++                    android:layout_marginStart="7dp"
++                    android:orientation="vertical">
++
++                    <TextView
++                        android:layout_width="wrap_content"
++                        android:layout_height="wrap_content"
++                        android:fontFamily="sans-serif-medium"
++                        android:letterSpacing="0.06"
++                        android:text="@string/dedicated_home_carplay"
++                        android:textColor="@color/tracer_text_secondary"
++                        android:textSize="9sp"
++                        android:textStyle="bold" />
++
++                    <TextView
++                        android:layout_width="wrap_content"
++                        android:layout_height="wrap_content"
++                        android:layout_marginTop="1dp"
++                        android:fontFamily="sans-serif-medium"
++                        android:letterSpacing="0.06"
++                        android:text="@string/dedicated_home_platform_unavailable"
++                        android:textColor="@color/tracer_text_muted"
++                        android:textSize="6sp"
++                        android:textStyle="bold" />
++                </LinearLayout>
++            </LinearLayout>
++
++            <com.google.android.material.button.MaterialButton
++                android:id="@+id/wifi_button"
++                android:layout_width="185dp"
++                android:layout_height="48dp"
++                android:autoSizeMaxTextSize="13sp"
++                android:autoSizeMinTextSize="9sp"
++                android:autoSizeStepGranularity="1sp"
++                android:autoSizeTextType="uniform"
++                android:contentDescription="@string/dedicated_home_connect"
++                android:fontFamily="sans-serif-medium"
++                android:letterSpacing="0.07"
++                android:maxLines="1"
++                android:text="@string/dedicated_home_connect"
++                android:textAllCaps="true"
++                android:textColor="@android:color/white"
++                android:textStyle="bold"
++                app:backgroundTint="@color/tracer_accent"
++                app:cornerRadius="6dp"
++                app:icon="@drawable/ic_android_auto_mark"
++                app:iconGravity="textStart"
++                app:iconPadding="9dp"
++                app:iconSize="21dp"
++                app:iconTint="@null" />
++        </LinearLayout>
+     </androidx.constraintlayout.widget.ConstraintLayout>
+ 
++    <!-- Kept for legacy code paths and rollback; hidden on the dedicated receiver home. -->
++    <com.google.android.material.button.MaterialButton
++        android:id="@+id/self_mode_button"
++        android:layout_width="1dp"
++        android:layout_height="1dp"
++        android:visibility="gone" />
++
++    <TextView
++        android:id="@+id/self_mode_text"
++        android:layout_width="1dp"
++        android:layout_height="1dp"
++        android:visibility="gone" />
++
++    <com.google.android.material.button.MaterialButton
++        android:id="@+id/usb_button"
++        android:layout_width="1dp"
++        android:layout_height="1dp"
++        android:visibility="gone" />
++
++    <TextView
++        android:id="@+id/usb_text"
++        android:layout_width="1dp"
++        android:layout_height="1dp"
++        android:visibility="gone" />
++
++    <TextView
++        android:id="@+id/settings_text"
++        android:layout_width="1dp"
++        android:layout_height="1dp"
++        android:visibility="gone" />
++
+     <com.google.android.material.button.MaterialButton
+         android:id="@+id/exit_button"
+-        android:layout_width="wrap_content"
+-        android:layout_height="wrap_content"
+-        app:layout_constraintBottom_toBottomOf="parent"
+-        app:layout_constraintEnd_toEndOf="parent"
+-        android:layout_margin="16dp"
+-        android:text="@string/exit"
+-        app:backgroundTint="@color/material_grey_700"
+-        android:textColor="@android:color/white"
+-        app:cornerRadius="8dp" />
++        android:layout_width="1dp"
++        android:layout_height="1dp"
++        android:visibility="gone" />
+ 
+-</androidx.constraintlayout.widget.ConstraintLayout>
+\ No newline at end of file
++</androidx.constraintlayout.widget.ConstraintLayout>
+diff --git a/app/src/main/res/mipmap-anydpi-v26/ic_launcher.xml b/app/src/main/res/mipmap-anydpi-v26/ic_launcher.xml
+index 036d09bc5fd523323794379703c4a111d1e28a04..d19791f4e6bbab3cdb095a61f087df0ca0f0018a 100644
+--- a/app/src/main/res/mipmap-anydpi-v26/ic_launcher.xml
++++ b/app/src/main/res/mipmap-anydpi-v26/ic_launcher.xml
+@@ -1,5 +1,5 @@
+ <?xml version="1.0" encoding="utf-8"?>
+ <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+     <background android:drawable="@color/ic_launcher_background"/>
+-    <foreground android:drawable="@mipmap/ic_launcher_foreground"/>
+-</adaptive-icon>
+\ No newline at end of file
++    <foreground android:drawable="@drawable/yamaha_tuning_forks_tinted"/>
++</adaptive-icon>
+diff --git a/app/src/main/res/mipmap-anydpi-v26/ic_launcher_round.xml b/app/src/main/res/mipmap-anydpi-v26/ic_launcher_round.xml
+index 036d09bc5fd523323794379703c4a111d1e28a04..d19791f4e6bbab3cdb095a61f087df0ca0f0018a 100644
+--- a/app/src/main/res/mipmap-anydpi-v26/ic_launcher_round.xml
++++ b/app/src/main/res/mipmap-anydpi-v26/ic_launcher_round.xml
+@@ -1,5 +1,5 @@
+ <?xml version="1.0" encoding="utf-8"?>
+ <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+     <background android:drawable="@color/ic_launcher_background"/>
+-    <foreground android:drawable="@mipmap/ic_launcher_foreground"/>
+-</adaptive-icon>
+\ No newline at end of file
++    <foreground android:drawable="@drawable/yamaha_tuning_forks_tinted"/>
++</adaptive-icon>
+diff --git a/app/src/main/res/values-pt-rBR/strings.xml b/app/src/main/res/values-pt-rBR/strings.xml
+index 351bff44c213b40c71b4573a92b8d6350b62cafa..9bb069efa3d98fad82bc37cdc0cd92e5aa99dbda 100644
+--- a/app/src/main/res/values-pt-rBR/strings.xml
++++ b/app/src/main/res/values-pt-rBR/strings.xml
+@@ -9,6 +9,37 @@
+     <string name="allowed">Permitido</string>
+     <string name="ignored">Ignorado</string>
+     <string name="exit">Sair</string>
++    <string name="dedicated_home_vehicle">RECEPTOR DA MOTO</string>
++    <string name="dedicated_home_subtitle">CENTRAL DEDICADA PARA PILOTAGEM</string>
++    <string name="dedicated_home_vehicle_short">MOTO</string>
++    <string name="dedicated_home_subtitle_short">CENTRAL MULTIMÍDIA</string>
++    <string name="dedicated_home_projection_title">Android Auto sem fio</string>
++    <string name="dedicated_home_connect">Conectar</string>
++    <string name="dedicated_home_return">Voltar ao Android Auto</string>
++    <string name="dedicated_home_connecting">Conectando…</string>
++    <string name="dedicated_home_ready_badge">PRONTO</string>
++    <string name="dedicated_home_connecting_badge">CONECTANDO</string>
++    <string name="dedicated_home_connected_badge">CONECTADO</string>
++    <string name="dedicated_home_ready_detail">Toque para conectar seu telefone</string>
++    <string name="dedicated_home_connecting_detail">Acordando o telefone e criando o link sem fio</string>
++    <string name="dedicated_home_connected_detail">Projeção ativa e pronta para uso</string>
++    <string name="dedicated_home_carplay">CARPLAY</string>
++    <string name="dedicated_home_platform_unavailable">NÃO INSTALADO</string>
++    <string name="dedicated_home_carplay_unavailable_description">CarPlay não está instalado neste receptor</string>
++    <string name="dedicated_home_audio_label">ROTA DE ÁUDIO</string>
++    <string name="dedicated_home_audio_phone">Telefone principal → intercom</string>
++    <string name="dedicated_home_audio_xcover">Alto-falante do XCover</string>
++    <string name="dedicated_home_tpms_label">TPMS</string>
++    <string name="dedicated_home_tpms_unconfigured">Não configurado</string>
++    <string name="dedicated_home_tpms_unconfigured_short">SEM SENSORES</string>
++    <string name="dedicated_home_tpms_front">DIANTEIRO</string>
++    <string name="dedicated_home_tpms_rear">TRASEIRO</string>
++    <string name="dedicated_home_tpms_temperature">TEMPERATURA</string>
++    <string name="dedicated_home_tpms_placeholder">--.-</string>
++    <string name="dedicated_home_tpms_temperature_placeholder">-- °C</string>
++    <string name="dedicated_home_tpms_unit">bar</string>
++    <string name="yamaha_motor_logo_description">Yamaha Motor</string>
++    <string name="tracer_900_gt_image_description">Imagem da motocicleta</string>
+     <string name="video">Android Auto</string>
+     <string name="self_mode">Self Mode</string>
+     <string name="to_android_auto">Ir para o Android Auto</string>
+diff --git a/app/src/main/res/values-v31/styles.xml b/app/src/main/res/values-v31/styles.xml
+new file mode 100644
+index 0000000000000000000000000000000000000000..7e94ba3eb152f99ccc0f7ec89301380b03e4c37f
+--- /dev/null
++++ b/app/src/main/res/values-v31/styles.xml
+@@ -0,0 +1,15 @@
++<?xml version="1.0" encoding="utf-8"?>
++<resources>
++    <!-- Android 12+ inserts a system splash before MainActivity's branded overlay. -->
++    <style name="SplashTheme" parent="AppTheme">
++        <item name="android:windowBackground">@drawable/splash_background</item>
++        <item name="android:windowSplashScreenBackground">@color/extreme_dark_background</item>
++        <item name="android:windowSplashScreenAnimatedIcon">@drawable/yamaha_tuning_forks_tinted</item>
++        <item name="android:windowSplashScreenIconBackgroundColor">@color/extreme_dark_background</item>
++        <item name="android:windowSplashScreenAnimationDuration">250</item>
++        <item name="android:statusBarColor">@color/extreme_dark_background</item>
++        <item name="android:navigationBarColor">@color/extreme_dark_background</item>
++        <item name="android:windowLightStatusBar">false</item>
++        <item name="android:windowLightNavigationBar">false</item>
++    </style>
++</resources>
+diff --git a/app/src/main/res/values/colors.xml b/app/src/main/res/values/colors.xml
+index 21e2587689f2ffbd640ccf1ef4c4f015a9ce7264..ca9c5847ef8bc3f952014d2bf9699f66bef8b84c 100644
+--- a/app/src/main/res/values/colors.xml
++++ b/app/src/main/res/values/colors.xml
+@@ -15,7 +15,7 @@
+     <color name="black_overlay">#66000000</color>
+     
+     <color name="setting_background_color">#F0F0F0</color>
+-    <color name="brand_teal">#009688</color>
++    <color name="brand_teal">#6D7B3E</color>
+     <color name="divider_color">#1F000000</color>
+     <color name="adaptive_text_color">#DE000000</color>
+ 
+@@ -30,7 +30,16 @@
+     <color name="color_wifi_purple">#8e44ad</color>
+     <color name="color_settings_darkblue">#2c3e50</color>
+ 
++    <!-- Dedicated motorcycle receiver home -->
++    <color name="tracer_accent">#6D7B3E</color>
++    <color name="tracer_connecting">#B4C578</color>
++    <color name="tracer_connected">#96B85C</color>
++    <color name="tracer_text_secondary">#D1D3D7</color>
++    <color name="tracer_text_muted">#85888F</color>
++    <color name="tracer_control_idle">#12160F</color>
++    <color name="tracer_control_stroke">#46503B</color>
++
+     <!-- Segmented Button Colors -->
+     <color name="segmented_button_stroke">#808080</color>
+ 
+-</resources>
+\ No newline at end of file
++</resources>
+diff --git a/app/src/main/res/values/ic_launcher_background.xml b/app/src/main/res/values/ic_launcher_background.xml
+index b037a5189e2da8cc937dbc6b4a80efc0e8fd8088..cdde88fb8db7277bddbe94548a4d53f72fecb17a 100644
+--- a/app/src/main/res/values/ic_launcher_background.xml
++++ b/app/src/main/res/values/ic_launcher_background.xml
+@@ -1,4 +1,4 @@
+ <?xml version="1.0" encoding="utf-8"?>
+ <resources>
+-    <color name="ic_launcher_background">#3198EF</color>
+-</resources>
+\ No newline at end of file
++    <color name="ic_launcher_background">#000000</color>
++</resources>
+diff --git a/app/src/main/res/values/strings.xml b/app/src/main/res/values/strings.xml
+index c9a98ec51792b99138ca7fc806fb22683272fde3..1b9803d36d66892580fa5bbba0d465024e712280 100644
+--- a/app/src/main/res/values/strings.xml
++++ b/app/src/main/res/values/strings.xml
+@@ -172,6 +172,37 @@
+     <string name="allowed">Allowed</string>
+     <string name="ignored">Ignored</string>
+     <string name="exit">Exit</string>
++    <string name="dedicated_home_vehicle">MOTORCYCLE RECEIVER</string>
++    <string name="dedicated_home_subtitle">DEDICATED RIDING DISPLAY</string>
++    <string name="dedicated_home_vehicle_short">MOTORCYCLE</string>
++    <string name="dedicated_home_subtitle_short">MULTIMEDIA DISPLAY</string>
++    <string name="dedicated_home_projection_title">Wireless Android Auto</string>
++    <string name="dedicated_home_connect">Connect</string>
++    <string name="dedicated_home_return">Return to Android Auto</string>
++    <string name="dedicated_home_connecting">Connecting…</string>
++    <string name="dedicated_home_ready_badge">READY</string>
++    <string name="dedicated_home_connecting_badge">CONNECTING</string>
++    <string name="dedicated_home_connected_badge">CONNECTED</string>
++    <string name="dedicated_home_ready_detail">Tap to connect to the primary phone</string>
++    <string name="dedicated_home_connecting_detail">Waking the phone and creating the wireless link</string>
++    <string name="dedicated_home_connected_detail">Projection active and ready to use</string>
++    <string name="dedicated_home_carplay">CARPLAY</string>
++    <string name="dedicated_home_platform_unavailable">NOT INSTALLED</string>
++    <string name="dedicated_home_carplay_unavailable_description">CarPlay is not installed on this receiver</string>
++    <string name="dedicated_home_audio_label">AUDIO ROUTE</string>
++    <string name="dedicated_home_audio_phone">Primary phone → intercom</string>
++    <string name="dedicated_home_audio_xcover">XCover speaker</string>
++    <string name="dedicated_home_tpms_label">TPMS</string>
++    <string name="dedicated_home_tpms_unconfigured">Not configured</string>
++    <string name="dedicated_home_tpms_unconfigured_short">NO SENSORS</string>
++    <string name="dedicated_home_tpms_front">FRONT</string>
++    <string name="dedicated_home_tpms_rear">REAR</string>
++    <string name="dedicated_home_tpms_temperature">TEMPERATURE</string>
++    <string name="dedicated_home_tpms_placeholder">--.-</string>
++    <string name="dedicated_home_tpms_temperature_placeholder">-- °C</string>
++    <string name="dedicated_home_tpms_unit">bar</string>
++    <string name="yamaha_motor_logo_description">Yamaha Motor</string>
++    <string name="tracer_900_gt_image_description">Motorcycle image</string>
+     <string name="video">Android Auto</string>
+     <string name="self_mode">Self Mode</string>
+     <string name="to_android_auto">To Android Auto</string>
+diff --git a/app/src/main/res/values/styles.xml b/app/src/main/res/values/styles.xml
+index 0b262cb2bc6c3a6646390fa87afa14d813413975..c0c6fbe54d8d6e45df06d784e03350133bf8eb11 100644
+--- a/app/src/main/res/values/styles.xml
++++ b/app/src/main/res/values/styles.xml
+@@ -24,8 +24,8 @@
+ 
+     <style name="SplashTheme" parent="AppTheme">
+         <item name="android:windowBackground">@drawable/splash_background</item>
+-        <item name="android:statusBarColor">@color/color_projection_blue</item>
+-        <item name="android:navigationBarColor">@color/color_projection_blue</item>
++        <item name="android:statusBarColor">@color/extreme_dark_background</item>
++        <item name="android:navigationBarColor">@color/extreme_dark_background</item>
+     </style>
+ 
+     <style name="SplashTheme.Fullscreen" parent="SplashTheme">
+diff --git a/app/src/test/java/com/andrerinas/headunitrevived/connection/NativeAaHandshakeManagerTest.kt b/app/src/test/java/com/andrerinas/headunitrevived/connection/NativeAaHandshakeManagerTest.kt
+index a336944666bfe81eeeb325f3e9fb4ebe69244fac..c4468436dbb7b27a3e5106565d47532471dcc2ae 100644
+--- a/app/src/test/java/com/andrerinas/headunitrevived/connection/NativeAaHandshakeManagerTest.kt
++++ b/app/src/test/java/com/andrerinas/headunitrevived/connection/NativeAaHandshakeManagerTest.kt
+@@ -68,4 +68,34 @@ class NativeAaHandshakeManagerTest {
+         )
+         assertTrue(result.isEmpty())
+     }
++
++    @Test
++    fun `parses audio gateway features from fragmented HFP response`() {
++        val response = "\r\n+BRSF: 1024\r\n\r\nOK\r\n"
++
++        assertEquals(1024, NativeAaHandshakeManager.parseHfpAgFeatures(response))
++        assertEquals(true, NativeAaHandshakeManager.hfpTerminalResponse(response))
++    }
++
++    @Test
++    fun `SLC uses mandatory command order without codec negotiation`() {
++        assertEquals(
++            listOf("AT+CIND=?", "AT+CIND?", "AT+CMER=3,0,0,1"),
++            NativeAaHandshakeManager.hfpSlcFollowUpCommands(0)
++        )
++    }
++
++    @Test
++    fun `SLC adds BAC when hands-free and audio gateway negotiate codecs`() {
++        assertEquals(
++            listOf("AT+BAC=1,2", "AT+CIND=?", "AT+CIND?", "AT+CMER=3,0,0,1"),
++            NativeAaHandshakeManager.hfpSlcFollowUpCommands(1 shl 9)
++        )
++    }
++
++    @Test
++    fun `HFP terminal parser distinguishes error from incomplete response`() {
++        assertEquals(false, NativeAaHandshakeManager.hfpTerminalResponse("\r\nERROR\r\n"))
++        assertEquals(null, NativeAaHandshakeManager.hfpTerminalResponse("\r\n+CIND: 1,0"))
++    }
+ }
+diff --git a/app/src/test/java/com/andrerinas/headunitrevived/main/DedicatedGreenThemeContractTest.kt b/app/src/test/java/com/andrerinas/headunitrevived/main/DedicatedGreenThemeContractTest.kt
+new file mode 100644
+index 0000000000000000000000000000000000000000..52646349c1ef61e3d3317fde6c0e0f1cd7852eb9
+--- /dev/null
++++ b/app/src/test/java/com/andrerinas/headunitrevived/main/DedicatedGreenThemeContractTest.kt
+@@ -0,0 +1,24 @@
++package com.andrerinas.openheadunit.main
++
++import java.io.File
++import org.junit.Assert.assertFalse
++import org.junit.Assert.assertTrue
++import org.junit.Test
++
++class DedicatedGreenThemeContractTest {
++
++    @Test
++    fun `dedicated receiver uses the motorcycle olive palette throughout`() {
++        val colors = File("src/main/res/values/colors.xml").readText()
++        val home = File("src/main/res/layout/fragment_home.xml").readText()
++        val splash = File("src/main/res/drawable/splash_background.xml").readText()
++
++        assertTrue(colors.contains("<color name=\"tracer_accent\">#6D7B3E</color>"))
++        assertTrue(colors.contains("<color name=\"brand_teal\">#6D7B3E</color>"))
++        assertTrue(home.contains("app:tint=\"@color/tracer_accent\""))
++        assertTrue(home.contains("app:backgroundTint=\"@color/tracer_accent\""))
++        assertTrue(splash.contains("android:tint=\"@color/tracer_accent\""))
++        assertFalse(colors.contains("tracer_red"))
++        assertFalse(home.contains("tracer_red"))
++    }
++}
+diff --git a/app/src/test/java/com/andrerinas/headunitrevived/main/DedicatedHomeUiStateTest.kt b/app/src/test/java/com/andrerinas/headunitrevived/main/DedicatedHomeUiStateTest.kt
+new file mode 100644
+index 0000000000000000000000000000000000000000..e693710b5b1e2bd98d02e5d4bae3f697aa7fc440
+--- /dev/null
++++ b/app/src/test/java/com/andrerinas/headunitrevived/main/DedicatedHomeUiStateTest.kt
+@@ -0,0 +1,52 @@
++package com.andrerinas.openheadunit.main
++
++import com.andrerinas.openheadunit.connection.CommManager
++import org.junit.Assert.assertEquals
++import org.junit.Test
++
++class DedicatedHomeUiStateTest {
++
++    @Test
++    fun `disconnected is ready`() {
++        assertEquals(
++            DedicatedHomeConnectionState.READY,
++            resolveDedicatedHomeConnectionState(
++                CommManager.ConnectionState.Disconnected(),
++                scanning = false
++            )
++        )
++    }
++
++    @Test
++    fun `wireless scan is connecting`() {
++        assertEquals(
++            DedicatedHomeConnectionState.CONNECTING,
++            resolveDedicatedHomeConnectionState(
++                CommManager.ConnectionState.Disconnected(),
++                scanning = true
++            )
++        )
++    }
++
++    @Test
++    fun `handshake is connecting until transport starts`() {
++        assertEquals(
++            DedicatedHomeConnectionState.CONNECTING,
++            resolveDedicatedHomeConnectionState(
++                CommManager.ConnectionState.HandshakeComplete,
++                scanning = false
++            )
++        )
++    }
++
++    @Test
++    fun `started transport is connected`() {
++        assertEquals(
++            DedicatedHomeConnectionState.CONNECTED,
++            resolveDedicatedHomeConnectionState(
++                CommManager.ConnectionState.TransportStarted,
++                scanning = false
++            )
++        )
++    }
++}
+diff --git a/app/src/test/java/com/andrerinas/headunitrevived/main/HomeLayoutContractTest.kt b/app/src/test/java/com/andrerinas/headunitrevived/main/HomeLayoutContractTest.kt
+new file mode 100644
+index 0000000000000000000000000000000000000000..71f45ccfa2c0bb27f5523d139ec020cf0d9f7a23
+--- /dev/null
++++ b/app/src/test/java/com/andrerinas/headunitrevived/main/HomeLayoutContractTest.kt
+@@ -0,0 +1,51 @@
++package com.andrerinas.openheadunit.main
++
++import java.io.File
++import org.junit.Assert.assertTrue
++import org.junit.Test
++
++class HomeLayoutContractTest {
++
++    @Test
++    fun `every home layout variant exposes fragment bindings`() {
++        val requiredIds = listOf(
++            "self_mode_button",
++            "usb_button",
++            "settings_button",
++            "wifi_button",
++            "wifi_text",
++            "exit_button",
++            "self_mode_text",
++            "connection_badge",
++            "audio_route_text"
++        )
++
++        listOf(
++            "layout/fragment_home.xml",
++            "layout-port/fragment_home.xml"
++        ).forEach { relativePath ->
++            val layout = File("src/main/res/$relativePath")
++            assertTrue("Missing layout source: $layout", layout.isFile)
++            val xml = layout.readText()
++
++            requiredIds.forEach { id ->
++                assertTrue(
++                    "$relativePath must expose @$id for HomeFragment",
++                    xml.contains("@+id/$id")
++                )
++            }
++        }
++    }
++
++    @Test
++    fun `dedicated home distinguishes active Android Auto from unavailable CarPlay`() {
++        val xml = File("src/main/res/layout/fragment_home.xml").readText()
++
++        assertTrue(xml.contains("@+id/platform_actions"))
++        assertTrue(xml.contains("@+id/carplay_card"))
++        assertTrue(xml.contains("android:enabled=\"false\""))
++        assertTrue(xml.contains("@drawable/ic_carplay_mark"))
++        assertTrue(xml.contains("@drawable/ic_android_auto_mark"))
++        assertTrue(xml.contains("@string/dedicated_home_platform_unavailable"))
++    }
++}
+diff --git a/app/src/test/java/com/andrerinas/headunitrevived/main/UnpluggedPowerPolicyContractTest.kt b/app/src/test/java/com/andrerinas/headunitrevived/main/UnpluggedPowerPolicyContractTest.kt
+new file mode 100644
+index 0000000000000000000000000000000000000000..5e5ff07cacdf83ecf87f7768cbeae8c5cd9c4fff
+--- /dev/null
++++ b/app/src/test/java/com/andrerinas/headunitrevived/main/UnpluggedPowerPolicyContractTest.kt
+@@ -0,0 +1,24 @@
++package com.andrerinas.openheadunit.main
++
++import java.io.File
++import org.junit.Assert.assertFalse
++import org.junit.Assert.assertTrue
++import org.junit.Test
++
++class UnpluggedPowerPolicyContractTest {
++
++    @Test
++    fun `head unit does not override Android screen timeout after external power is removed`() {
++        val systemUi = File(
++            "src/main/java/com/andrerinas/openheadunit/utils/SystemUI.kt"
++        ).readText()
++        val settings = File(
++            "src/main/java/com/andrerinas/openheadunit/utils/Settings.kt"
++        ).readText()
++
++        assertFalse(systemUi.contains("addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)"))
++        assertTrue(systemUi.contains("clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)"))
++        assertFalse(settings.contains("prefs.getBoolean(\"auto-start-on-screen-on\", true)"))
++        assertFalse(settings.contains("prefs.getBoolean(KEY_AUTO_START_ON_SCREEN_ON, true)"))
++    }
++}
+diff --git a/app/src/test/java/com/andrerinas/openheadunit/app/WirelessAdbBootContractTest.kt b/app/src/test/java/com/andrerinas/openheadunit/app/WirelessAdbBootContractTest.kt
+new file mode 100644
+index 0000000000000000000000000000000000000000..24e4f5c9f600071e3dca33e0961c05c7913f2763
+--- /dev/null
++++ b/app/src/test/java/com/andrerinas/openheadunit/app/WirelessAdbBootContractTest.kt
+@@ -0,0 +1,26 @@
++package com.andrerinas.openheadunit.app
++
++import org.junit.Assert.assertTrue
++import org.junit.Test
++import java.io.File
++
++class WirelessAdbBootContractTest {
++
++    @Test
++    fun manifestAndBootReceiverKeepWirelessAdbRecoveryWired() {
++        val workingDirectory = System.getProperty("user.dir")
++            ?: error("user.dir is unavailable")
++        val projectRoot = generateSequence(File(workingDirectory)) { it.parentFile }
++            .first { File(it, "app/src/main/AndroidManifest.xml").isFile }
++        val manifest = File(projectRoot, "app/src/main/AndroidManifest.xml").readText()
++        val receiver = File(
++            projectRoot,
++            "app/src/main/java/com/andrerinas/openheadunit/app/BootCompleteReceiver.kt"
++        ).readText()
++
++        assertTrue(manifest.contains("android.permission.WRITE_SECURE_SETTINGS"))
++        assertTrue(receiver.contains("restoreWirelessAdbIfAuthorized(context, action)"))
++        assertTrue(receiver.contains("ADB_WIFI_ENABLED"))
++        assertTrue(receiver.contains("AndroidSettings.Global.putInt"))
++    }
++}
+diff --git a/app/src/test/java/com/andrerinas/openheadunit/connection/NativeAaToastContractTest.kt b/app/src/test/java/com/andrerinas/openheadunit/connection/NativeAaToastContractTest.kt
+new file mode 100644
+index 0000000000000000000000000000000000000000..f9072303038f1b95098f62a10669f96aa0132c97
+--- /dev/null
++++ b/app/src/test/java/com/andrerinas/openheadunit/connection/NativeAaToastContractTest.kt
+@@ -0,0 +1,28 @@
++package com.andrerinas.openheadunit.connection
++
++import org.junit.Assert.assertFalse
++import org.junit.Assert.assertTrue
++import org.junit.Test
++import java.io.File
++
++class NativeAaToastContractTest {
++
++    @Test
++    fun nativeGroupDiagnosticsStayInLogsInsteadOfCoveringTheHud() {
++        val workingDirectory = System.getProperty("user.dir")
++            ?: error("user.dir is unavailable")
++        val projectRoot = generateSequence(File(workingDirectory)) { it.parentFile }
++            .first { File(it, "app/src/main/AndroidManifest.xml").isFile }
++        val source = File(
++            projectRoot,
++            "app/src/main/java/com/andrerinas/openheadunit/connection/WifiDirectManager.kt"
++        ).readText()
++        val statusMethod = source
++            .substringAfter("private fun notifyNativeGroupStarted")
++            .substringBefore("private fun showToast")
++
++        assertFalse(statusMethod.contains("showToast("))
++        assertFalse(source.contains("showToast(\"Native AA WiFi Direct started"))
++        assertTrue(source.contains("showToast(\"Native AA requires Wi-Fi"))
++    }
++}

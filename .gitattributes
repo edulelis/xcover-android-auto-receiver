@@ -1,0 +1,6 @@
+# Generated patches and immutable raw snapshots preserve upstream/device whitespace.
+patches/*.patch -whitespace
+artifacts/device-snapshots/*.txt -whitespace
+
+# Historical planning uses intentional Markdown hard line breaks.
+docs/initial-change-plan.md -whitespace
