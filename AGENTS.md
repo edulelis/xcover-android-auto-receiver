@@ -2,7 +2,7 @@
 
 This file applies to the entire repository. It defines how human and automated agents must work on the XCover receiver project. It is an operating policy, not a substitute for the canonical installed-state record.
 
-Last reconciled with the maintained documentation: **2026-08-04**.
+Last reconciled with the maintained documentation: **2026-08-05**.
 
 ## 1. Mission
 
@@ -38,7 +38,7 @@ Before changing anything, read the documents relevant to the task in this order:
 1. `AGENTS.md` — agent behavior, safety rules, and required workflow.
 2. `README.md` — project entry point, daily operation, recovery, build, and rollback.
 3. `docs/user-guide.md` — complete public installation, first connection, provisioning, troubleshooting, and rollback.
-4. `docs/current-state.md` — canonical installed state, verified facts, provisional values, and open risks.
+4. `docs/current-state.md` — canonical installed state, verified facts, public repository privacy state, provisional values, and open risks.
 5. The owning feature document under `docs/`:
    - `docs/android-auto-xcover-only.md` for Android Auto transport and HFP/Wi-Fi Direct;
    - `docs/tpms-integration.md` for BLE TPMS;
@@ -715,6 +715,8 @@ Never write the following into repository files, screenshots, final answers, or 
 - precise current location or unsanitized maps.
 
 When command output contains a secret, summarize the relevant non-secret result instead of pasting the raw output. Redact before storing evidence.
+
+Record repository privacy incidents only as anonymized status in `docs/current-state.md`. Never preserve removed object IDs, account handles, transport endpoints, device names, or other identifying values merely to document that they were removed.
 
 ## 25. Rollback and recovery entry points
 

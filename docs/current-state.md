@@ -2,6 +2,7 @@
 title: Canonical installed state
 status: current
 last_verified: 2026-08-04
+last_updated: 2026-08-05
 audience: operators, maintainers, and LLM agents
 ---
 
@@ -126,6 +127,14 @@ Cleanup batches use `pm disable-user --user 0`, not removal. Matching rollback s
 7. Calibrate front/rear pressure thresholds against a known gauge.
 8. Repeat the touch-lock interception check during a live Android Auto projection.
 9. Reassess the Yamaha/Tracer theme if the project's personal, non-commercial scope changes.
+
+## Public repository privacy state
+
+On 2026-08-05, the public default branch and the existing release tag were rewritten to an anonymized root history after device-specific evidence and identifying commit metadata were removed. A fresh public clone verified the sanitized tree and generic commit identity. No public forks or pull requests were present at that verification point.
+
+The removed object identifiers are intentionally not recorded. They are unreachable from the published branch, tag, and a normal clone, although the hosting provider may temporarily retain unreachable objects for callers who already possess an old identifier. No credential or token exposure was identified. Server-side garbage collection and cached-view removal remain optional follow-up through the hosting provider's support process; no support request has been opened.
+
+Repository ownership remains visible through the hosting platform by design. Removing that association would require transferring the project to a neutral account or organization and is separate from repository-content anonymization.
 
 ## Recovery entry points
 
