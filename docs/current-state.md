@@ -100,6 +100,10 @@ See [`../apks/README.md`](../apks/README.md) for source, certificate, and rollba
 
 Do not treat provisional thresholds as motorcycle tire specifications. Calibrate them separately for front and rear tires after the physical sensors arrive and are compared with a known gauge.
 
+## TPMS source candidate not yet installed
+
+The active installed APK remains `v0.2.0`. A newer source candidate is under verification and is **not** physical-device evidence or an installed-state claim. It changes setup from an always-on ambient list to a user-started, 30-second activation capture with stable candidate order. Static inspection of MotorCare 1.3.0 also yielded a provisional `TPMS1`/`TPMS2` identity rule and six-digit sensor identifier. The actual LEEPEE/MotorCare kit must still be captured before this is considered compatible or able to decode telemetry.
+
 ## Disabled package strategy
 
 Cleanup batches use `pm disable-user --user 0`, not removal. Matching rollback scripts re-enable every package. The active architecture preserves System UI, Settings, One UI Home, keyboard, Bluetooth, Wi-Fi, location, Play Services, OTA updater, Package Installer, and internal telephony/connectivity providers.

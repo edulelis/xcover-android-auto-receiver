@@ -1617,10 +1617,10 @@ index 0000000000000000000000000000000000000000..593939d0c49c13218872182f8644495b
 +}
 diff --git a/app/src/main/java/com/andrerinas/openheadunit/main/TpmsCandidateAdapter.kt b/app/src/main/java/com/andrerinas/openheadunit/main/TpmsCandidateAdapter.kt
 new file mode 100644
-index 0000000000000000000000000000000000000000..2851cd13a0fe774ff133660e268280ab0f6b3d49
+index 0000000000000000000000000000000000000000..b2546112455f483ef0bb9a04e699658bec40fc8d
 --- /dev/null
 +++ b/app/src/main/java/com/andrerinas/openheadunit/main/TpmsCandidateAdapter.kt
-@@ -0,0 +1,130 @@
+@@ -0,0 +1,138 @@
 +package com.andrerinas.openheadunit.main
 +
 +import android.content.res.ColorStateList
@@ -1630,6 +1630,8 @@ index 0000000000000000000000000000000000000000..2851cd13a0fe774ff133660e268280ab
 +import android.view.ViewGroup
 +import android.widget.TextView
 +import androidx.core.content.ContextCompat
++import androidx.recyclerview.widget.DiffUtil
++import androidx.recyclerview.widget.ListAdapter
 +import androidx.recyclerview.widget.RecyclerView
 +import com.andrerinas.openheadunit.R
 +import com.andrerinas.openheadunit.tpms.TirePosition
@@ -1639,8 +1641,7 @@ index 0000000000000000000000000000000000000000..2851cd13a0fe774ff133660e268280ab
 +
 +class TpmsCandidateAdapter(
 +    private val onAssign: (TpmsCandidate) -> Unit,
-+) : RecyclerView.Adapter<TpmsCandidateAdapter.ViewHolder>() {
-+    private var candidates: List<TpmsCandidate> = emptyList()
++) : ListAdapter<TpmsCandidate, TpmsCandidateAdapter.ViewHolder>(CandidateDiff) {
 +    private var assignments = TpmsAssignments()
 +    private var target: TirePosition? = null
 +
@@ -1649,10 +1650,11 @@ index 0000000000000000000000000000000000000000..2851cd13a0fe774ff133660e268280ab
 +        assignments: TpmsAssignments,
 +        target: TirePosition?,
 +    ) {
-+        this.candidates = candidates
 +        this.assignments = assignments
 +        this.target = target
-+        notifyDataSetChanged()
++        // The repository preserves discovery order. Diffing prevents an RSSI refresh from
++        // resetting a focused item or making a captured sensor appear to jump around.
++        submitList(candidates)
 +    }
 +
 +    override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): ViewHolder {
@@ -1662,10 +1664,8 @@ index 0000000000000000000000000000000000000000..2851cd13a0fe774ff133660e268280ab
 +    }
 +
 +    override fun onBindViewHolder(holder: ViewHolder, position: Int) {
-+        holder.bind(candidates[position], assignments, target)
++        holder.bind(getItem(position), assignments, target)
 +    }
-+
-+    override fun getItemCount(): Int = candidates.size
 +
 +    inner class ViewHolder(view: View) : RecyclerView.ViewHolder(view) {
 +        private val title: TextView = view.findViewById(R.id.tpms_candidate_title)
@@ -1683,7 +1683,7 @@ index 0000000000000000000000000000000000000000..2851cd13a0fe774ff133660e268280ab
 +                if (candidate.reading != null) {
 +                    R.string.tpms_candidate_name
 +                } else {
-+                    R.string.tpms_candidate_generic
++                    R.string.tpms_candidate_detected
 +                },
 +                shortId,
 +            )
@@ -1750,13 +1750,21 @@ index 0000000000000000000000000000000000000000..2851cd13a0fe774ff133660e268280ab
 +            }
 +        }
 +    }
++
++    private object CandidateDiff : DiffUtil.ItemCallback<TpmsCandidate>() {
++        override fun areItemsTheSame(oldItem: TpmsCandidate, newItem: TpmsCandidate): Boolean =
++            oldItem.deviceId == newItem.deviceId
++
++        override fun areContentsTheSame(oldItem: TpmsCandidate, newItem: TpmsCandidate): Boolean =
++            oldItem == newItem
++    }
 +}
 diff --git a/app/src/main/java/com/andrerinas/openheadunit/main/TpmsPairingFragment.kt b/app/src/main/java/com/andrerinas/openheadunit/main/TpmsPairingFragment.kt
 new file mode 100644
-index 0000000000000000000000000000000000000000..f0c04197f4bbcda7a8b545216322182558c94bbb
+index 0000000000000000000000000000000000000000..7a85cb6ac3cf5ee68c9ec1a6a93380f7a37e7deb
 --- /dev/null
 +++ b/app/src/main/java/com/andrerinas/openheadunit/main/TpmsPairingFragment.kt
-@@ -0,0 +1,502 @@
+@@ -0,0 +1,492 @@
 +package com.andrerinas.openheadunit.main
 +
 +import android.bluetooth.BluetoothAdapter
@@ -1820,7 +1828,6 @@ index 0000000000000000000000000000000000000000..f0c04197f4bbcda7a8b5452163221825
 +
 +    private var activeTarget: TirePosition? = null
 +    private var replacing = false
-+    private var requestedPermissionAutomatically = false
 +    private var permissionDeniedThisVisit = false
 +    private var previousCandidateCount = 0
 +
@@ -1829,18 +1836,18 @@ index 0000000000000000000000000000000000000000..f0c04197f4bbcda7a8b5452163221825
 +    ) { grants ->
 +        if (grants.values.all { it } && repository.hasScanPermission()) {
 +            permissionDeniedThisVisit = false
-+            repository.startScan(pairingMode = true)
++            activeTarget?.let { repository.startScan(pairingMode = true, pairingTarget = it) }
 +        } else {
 +            permissionDeniedThisVisit = true
 +            // Publish a persistent, actionable error instead of relying on a transient toast.
-+            repository.startScan(pairingMode = true)
++            activeTarget?.let { repository.startScan(pairingMode = true, pairingTarget = it) }
 +        }
 +    }
 +
 +    private val bluetoothLauncher = registerForActivityResult(
 +        ActivityResultContracts.StartActivityForResult()
 +    ) {
-+        requestPermissionAndScan(userInitiated = true)
++        requestPermissionAndScan()
 +    }
 +
 +    override fun onCreateView(
@@ -1898,11 +1905,9 @@ index 0000000000000000000000000000000000000000..f0c04197f4bbcda7a8b5452163221825
 +
 +    override fun onResume() {
 +        super.onResume()
-+        if (activeTarget != null) {
-+            requestPermissionAndScan(userInitiated = false)
-+        } else {
-+            repository.stopScan()
-+        }
++        // Opening setup must not begin a broad scan or surface a permission request. A capture
++        // starts only when the rider deliberately presses the action for one wheel.
++        repository.stopScan()
 +    }
 +
 +    override fun onPause() {
@@ -1920,7 +1925,6 @@ index 0000000000000000000000000000000000000000..f0c04197f4bbcda7a8b5452163221825
 +        previousCandidateCount = 0
 +        repository.stopScan()
 +        repository.clearPairingCandidates()
-+        requestPermissionAndScan(userInitiated = true)
 +        render(repository.state.value)
 +    }
 +
@@ -1982,7 +1986,6 @@ index 0000000000000000000000000000000000000000..f0c04197f4bbcda7a8b5452163221825
 +        previousCandidateCount = 0
 +        repository.stopScan()
 +        repository.clearPairingCandidates()
-+        if (activeTarget != null) requestPermissionAndScan(userInitiated = false)
 +        render(repository.state.value)
 +    }
 +
@@ -1992,7 +1995,6 @@ index 0000000000000000000000000000000000000000..f0c04197f4bbcda7a8b5452163221825
 +        previousCandidateCount = 0
 +        repository.stopScan()
 +        repository.clearPairingCandidates()
-+        if (activeTarget != null) requestPermissionAndScan(userInitiated = false)
 +        render(repository.state.value)
 +    }
 +
@@ -2014,7 +2016,6 @@ index 0000000000000000000000000000000000000000..f0c04197f4bbcda7a8b5452163221825
 +                previousCandidateCount = 0
 +                repository.stopScan()
 +                repository.clearPairingCandidates()
-+                requestPermissionAndScan(userInitiated = true)
 +                render(repository.state.value)
 +            }
 +            .show()
@@ -2025,7 +2026,7 @@ index 0000000000000000000000000000000000000000..f0c04197f4bbcda7a8b5452163221825
 +        when (state.scanError) {
 +            TpmsScanError.PERMISSION_REQUIRED -> {
 +                if (permissionDeniedThisVisit) openAppSettings()
-+                else requestPermissionAndScan(userInitiated = true)
++                else requestPermissionAndScan()
 +            }
 +
 +            TpmsScanError.BLUETOOTH_DISABLED -> bluetoothLauncher.launch(
@@ -2033,22 +2034,19 @@ index 0000000000000000000000000000000000000000..f0c04197f4bbcda7a8b5452163221825
 +            )
 +
 +            TpmsScanError.BLE_UNSUPPORTED -> Unit
-+            TpmsScanError.SCAN_FAILED -> requestPermissionAndScan(userInitiated = true)
++            TpmsScanError.SCAN_FAILED -> requestPermissionAndScan()
 +            null -> if (state.scanning) repository.stopScan()
-+            else requestPermissionAndScan(userInitiated = true)
++            else requestPermissionAndScan()
 +        }
 +    }
 +
-+    private fun requestPermissionAndScan(userInitiated: Boolean) {
-+        if (activeTarget == null) return
++    private fun requestPermissionAndScan() {
++        val target = activeTarget ?: return
 +        if (repository.hasScanPermission()) {
-+            repository.startScan(pairingMode = true)
++            repository.startScan(pairingMode = true, pairingTarget = target)
 +            return
 +        }
-+        if (userInitiated || !requestedPermissionAutomatically) {
-+            requestedPermissionAutomatically = true
-+            permissionLauncher.launch(repository.requiredPermissions())
-+        }
++        permissionLauncher.launch(repository.requiredPermissions())
 +    }
 +
 +    private fun openAppSettings() {
@@ -2175,9 +2173,9 @@ index 0000000000000000000000000000000000000000..f0c04197f4bbcda7a8b5452163221825
 +        scanStatus.setText(
 +            when {
 +                state.scanError != null -> errorTitle(state.scanError)
-+                state.scanning && activeTarget == TirePosition.FRONT -> R.string.tpms_scanning_front
-+                state.scanning -> R.string.tpms_scanning_rear
-+                else -> R.string.tpms_scan_stopped
++                state.scanning -> R.string.tpms_capture_listening
++                state.candidates.isNotEmpty() -> R.string.tpms_capture_finished
++                else -> R.string.tpms_capture_ready
 +            }
 +        )
 +        scanButton.setText(
@@ -2221,7 +2219,7 @@ index 0000000000000000000000000000000000000000..f0c04197f4bbcda7a8b5452163221825
 +            return
 +        }
 +        stateTitle.setText(
-+            if (state.scanning) R.string.tpms_waiting_title else R.string.tpms_scan_stopped
++            if (state.scanning) R.string.tpms_waiting_title else R.string.tpms_empty_title
 +        )
 +        stateBody.setText(
 +            when {
@@ -2261,10 +2259,10 @@ index 0000000000000000000000000000000000000000..f0c04197f4bbcda7a8b5452163221825
 +}
 diff --git a/app/src/main/java/com/andrerinas/openheadunit/tpms/TpmsAdvertisementDecoder.kt b/app/src/main/java/com/andrerinas/openheadunit/tpms/TpmsAdvertisementDecoder.kt
 new file mode 100644
-index 0000000000000000000000000000000000000000..8962d575cce2df161e8a96800f69928ac2fdfe9e
+index 0000000000000000000000000000000000000000..e21520cd3d30faa32ccd5ac5e5ee9e3c5108efef
 --- /dev/null
 +++ b/app/src/main/java/com/andrerinas/openheadunit/tpms/TpmsAdvertisementDecoder.kt
-@@ -0,0 +1,120 @@
+@@ -0,0 +1,180 @@
 +package com.andrerinas.openheadunit.tpms
 +
 +import java.nio.charset.Charset
@@ -2280,6 +2278,11 @@ index 0000000000000000000000000000000000000000..8962d575cce2df161e8a96800f69928a
 +object TpmsAdvertisementDecoder {
 +    private const val BR_SERVICE_UUID = 0x27A5
 +    private const val PSI_TO_BAR = 0.0689475729
++    private const val MOTORCARE_FRONT_FRAME_TYPE = 80
++    private const val MOTORCARE_REAR_FRAME_TYPE = 81
++    private const val MOTORCARE_FRAME_TYPE_OFFSET = 22
++    private const val MOTORCARE_SENSOR_ID_OFFSET = 28
++    private const val MOTORCARE_SENSOR_ID_LENGTH = 6
 +    private val utf8: Charset = Charsets.UTF_8
 +
 +    /**
@@ -2371,14 +2374,69 @@ index 0000000000000000000000000000000000000000..8962d575cce2df161e8a96800f69928a
 +        )
 +    }
 +
-+    fun isLikelyTpms(parsed: ParsedBleAdvertisement, rssi: Int): Boolean {
-+        val normalizedName = parsed.advertisedName?.uppercase().orEmpty()
-+        return decode(parsed) != null ||
-+            BR_SERVICE_UUID in parsed.serviceUuids16 ||
-+            listOf("TPMS", "LEEPEE", "MOTORCARE").any(normalizedName::contains) ||
-+            // Discovery fallback for an undocumented MotorCare variant. Requiring a strong signal
-+            // and a compact manufacturer packet keeps unrelated nearby devices out of the list.
-+            (rssi >= -72 && parsed.manufacturerData.any { it.size in 5..16 })
++    /**
++     * Identifies only advertisements that carry a protocol signature we can explain. In
++     * particular, do not treat a strong generic manufacturer packet as a TPMS sensor: crowded
++     * places contain many of those, and presenting them makes an activation-first setup useless.
++     */
++    fun pairingIdentity(parsed: ParsedBleAdvertisement): TpmsPairingIdentity? {
++        decode(parsed)?.let { reading ->
++            return TpmsPairingIdentity(protocol = reading.protocol)
++        }
++
++        motorCareIdentity(parsed)?.let { return it }
++
++        // A malformed BR packet should remain discoverable for a later protocol capture, but the
++        // service UUID is still an explicit family signature rather than a proximity guess.
++        return if (BR_SERVICE_UUID in parsed.serviceUuids16) {
++            TpmsPairingIdentity(protocol = TpmsProtocol.BR_27A5)
++        } else {
++            null
++        }
++    }
++
++    fun isLikelyTpms(parsed: ParsedBleAdvertisement, @Suppress("UNUSED_PARAMETER") rssi: Int): Boolean =
++        pairingIdentity(parsed) != null
++
++    /**
++     * Static inspection of MotorCare 1.3.0 shows its automatic binding screen accepts only an
++     * exact TPMS1/TPMS_1 or TPMS2/TPMS_2 name plus a matching six-hex-digit identifier embedded
++     * in its advertisement. The first marker selects the front (80) or rear (81) slot.
++     *
++     * This is deliberately an identity decoder, not a pressure decoder: actual field packets are
++     * still required before displaying or alerting on MotorCare readings.
++     */
++    private fun motorCareIdentity(parsed: ParsedBleAdvertisement): TpmsPairingIdentity? {
++        val name = parsed.advertisedName?.uppercase() ?: return null
++        val expected = when {
++            name.startsWith("TPMS1") || name.startsWith("TPMS_1") ->
++                MOTORCARE_FRONT_FRAME_TYPE to TirePosition.FRONT
++            name.startsWith("TPMS2") || name.startsWith("TPMS_2") ->
++                MOTORCARE_REAR_FRAME_TYPE to TirePosition.REAR
++            else -> return null
++        }
++
++        val raw = parsed.rawHex
++        if (raw.length < MOTORCARE_SENSOR_ID_OFFSET + MOTORCARE_SENSOR_ID_LENGTH) return null
++        val frameType = raw.substring(
++            MOTORCARE_FRAME_TYPE_OFFSET,
++            MOTORCARE_FRAME_TYPE_OFFSET + 2,
++        ).toIntOrNull() ?: return null
++        if (frameType != expected.first) return null
++
++        val sensorId = raw.substring(
++            MOTORCARE_SENSOR_ID_OFFSET,
++            MOTORCARE_SENSOR_ID_OFFSET + MOTORCARE_SENSOR_ID_LENGTH,
++        ).uppercase()
++        if (!sensorId.all { it in '0'..'9' || it in 'A'..'F' } || !name.contains(sensorId)) {
++            return null
++        }
++
++        return TpmsPairingIdentity(
++            protocol = TpmsProtocol.MOTORCARE_TPMS,
++            sensorId = sensorId,
++            indicatedPosition = expected.second,
++        )
 +    }
 +
 +    private fun ByteArray.toHex(): String = joinToString(separator = "") {
@@ -2485,10 +2543,10 @@ index 0000000000000000000000000000000000000000..cfb7b798447291af90a2984f7ef9c412
 +}
 diff --git a/app/src/main/java/com/andrerinas/openheadunit/tpms/TpmsModels.kt b/app/src/main/java/com/andrerinas/openheadunit/tpms/TpmsModels.kt
 new file mode 100644
-index 0000000000000000000000000000000000000000..5c49cbead725c7b663f527fbdbe44c32ad4f4d86
+index 0000000000000000000000000000000000000000..c564f4dcf401967dbc38fee65d0fdd6f8923d82c
 --- /dev/null
 +++ b/app/src/main/java/com/andrerinas/openheadunit/tpms/TpmsModels.kt
-@@ -0,0 +1,111 @@
+@@ -0,0 +1,126 @@
 +package com.andrerinas.openheadunit.tpms
 +
 +const val TPMS_READING_STALE_AFTER_MS = 10 * 60 * 1000L
@@ -2507,6 +2565,7 @@ index 0000000000000000000000000000000000000000..5c49cbead725c7b663f527fbdbe44c32
 +
 +enum class TpmsProtocol {
 +    BR_27A5,
++    MOTORCARE_TPMS,
 +    UNKNOWN,
 +}
 +
@@ -2526,6 +2585,17 @@ index 0000000000000000000000000000000000000000..5c49cbead725c7b663f527fbdbe44c32
 +    val status: Int,
 +)
 +
++/**
++ * A stable identity recovered from an advertisement without creating an Android Bluetooth bond.
++ * Some sensor families expose a sensor serial in their advertising name and payload; keeping that
++ * identifier is more robust than treating the transport address as the user's pairing choice.
++ */
++data class TpmsPairingIdentity(
++    val protocol: TpmsProtocol,
++    val sensorId: String? = null,
++    val indicatedPosition: TirePosition? = null,
++)
++
 +data class TpmsReading(
 +    val deviceId: String,
 +    val decoded: TpmsDecodedReading,
@@ -2536,14 +2606,17 @@ index 0000000000000000000000000000000000000000..5c49cbead725c7b663f527fbdbe44c32
 +data class TpmsCandidate(
 +    val deviceId: String,
 +    val advertisedName: String?,
++    val detectedProtocol: TpmsProtocol,
++    val indicatedPosition: TirePosition?,
 +    val serviceUuids: Set<Int>,
 +    val manufacturerDataLengths: List<Int>,
 +    val rssi: Int,
++    val observationCount: Int,
 +    val rawAdvertisementHex: String,
 +    val reading: TpmsReading?,
 +) {
 +    val protocol: TpmsProtocol
-+        get() = reading?.decoded?.protocol ?: TpmsProtocol.UNKNOWN
++        get() = reading?.decoded?.protocol ?: detectedProtocol
 +}
 +
 +data class TpmsAssignments(
@@ -2602,10 +2675,10 @@ index 0000000000000000000000000000000000000000..5c49cbead725c7b663f527fbdbe44c32
 +)
 diff --git a/app/src/main/java/com/andrerinas/openheadunit/tpms/TpmsRepository.kt b/app/src/main/java/com/andrerinas/openheadunit/tpms/TpmsRepository.kt
 new file mode 100644
-index 0000000000000000000000000000000000000000..d782b6343e51625f8c0e2a5718624aeacbc4731a
+index 0000000000000000000000000000000000000000..15b31cfacc250089c20c1837b0316c7aafc0db91
 --- /dev/null
 +++ b/app/src/main/java/com/andrerinas/openheadunit/tpms/TpmsRepository.kt
-@@ -0,0 +1,223 @@
+@@ -0,0 +1,256 @@
 +package com.andrerinas.openheadunit.tpms
 +
 +import android.Manifest
@@ -2618,6 +2691,8 @@ index 0000000000000000000000000000000000000000..d782b6343e51625f8c0e2a5718624aea
 +import android.content.Context
 +import android.content.pm.PackageManager
 +import android.os.Build
++import android.os.Handler
++import android.os.Looper
 +import android.os.SystemClock
 +import androidx.core.content.ContextCompat
 +import kotlinx.coroutines.flow.MutableStateFlow
@@ -2640,6 +2715,7 @@ index 0000000000000000000000000000000000000000..d782b6343e51625f8c0e2a5718624aea
 +    )
 +    private val candidatesById = linkedMapOf<String, TpmsCandidate>()
 +    private val readingsById = linkedMapOf<String, TpmsReading>()
++    private val mainHandler = Handler(Looper.getMainLooper())
 +
 +    private val _state = MutableStateFlow(
 +        TpmsState(assignments = loadAssignments())
@@ -2647,6 +2723,8 @@ index 0000000000000000000000000000000000000000..d782b6343e51625f8c0e2a5718624aea
 +    val state: StateFlow<TpmsState> = _state.asStateFlow()
 +
 +    private var activeScanMode: Int? = null
++    private var activePairingTarget: TirePosition? = null
++    private var pairingScanTimeout: Runnable? = null
 +
 +    private val scanCallback = object : ScanCallback() {
 +        override fun onScanResult(callbackType: Int, result: ScanResult) {
@@ -2658,7 +2736,9 @@ index 0000000000000000000000000000000000000000..d782b6343e51625f8c0e2a5718624aea
 +        }
 +
 +        override fun onScanFailed(errorCode: Int) {
++            cancelPairingTimeout()
 +            activeScanMode = null
++            activePairingTarget = null
 +            publish(scanning = false, error = TpmsScanError.SCAN_FAILED)
 +        }
 +    }
@@ -2681,7 +2761,7 @@ index 0000000000000000000000000000000000000000..d782b6343e51625f8c0e2a5718624aea
 +    }
 +
 +    @SuppressLint("MissingPermission")
-+    fun startScan(pairingMode: Boolean) {
++    fun startScan(pairingMode: Boolean, pairingTarget: TirePosition? = null) {
 +        if (!hasScanPermission()) {
 +            publish(scanning = false, error = TpmsScanError.PERMISSION_REQUIRED)
 +            return
@@ -2721,19 +2801,30 @@ index 0000000000000000000000000000000000000000..d782b6343e51625f8c0e2a5718624aea
 +            .build()
 +
 +        candidatesById.clear()
++        activePairingTarget = pairingTarget.takeIf { pairingMode }
 +        scanner.startScan(emptyList(), settings, scanCallback)
 +        activeScanMode = desiredMode
++        if (pairingMode) {
++            schedulePairingTimeout()
++        } else {
++            cancelPairingTimeout()
++        }
 +        publish(scanning = true, error = null)
 +    }
 +
 +    @SuppressLint("MissingPermission")
 +    fun stopScan() {
-+        if (activeScanMode == null || Build.VERSION.SDK_INT < Build.VERSION_CODES.LOLLIPOP) return
++        cancelPairingTimeout()
++        if (activeScanMode == null || Build.VERSION.SDK_INT < Build.VERSION_CODES.LOLLIPOP) {
++            activePairingTarget = null
++            return
++        }
 +        val manager = appContext.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
 +        if (hasScanPermission()) {
 +            manager?.adapter?.bluetoothLeScanner?.stopScan(scanCallback)
 +        }
 +        activeScanMode = null
++        activePairingTarget = null
 +        publish(scanning = false, error = null)
 +    }
 +
@@ -2759,9 +2850,13 @@ index 0000000000000000000000000000000000000000..d782b6343e51625f8c0e2a5718624aea
 +    private fun acceptResult(result: ScanResult) {
 +        val raw = result.scanRecord?.bytes ?: return
 +        val parsed = TpmsAdvertisementDecoder.parse(raw)
-+        if (!TpmsAdvertisementDecoder.isLikelyTpms(parsed, result.rssi)) return
++        val identity = TpmsAdvertisementDecoder.pairingIdentity(parsed) ?: return
++        if (activePairingTarget != null &&
++            identity.indicatedPosition != null &&
++            identity.indicatedPosition != activePairingTarget
++        ) return
 +
-+        val deviceId = result.device.address ?: return
++        val deviceId = identity.sensorId ?: result.device.address ?: return
 +        val decoded = TpmsAdvertisementDecoder.decode(parsed)
 +        val reading = decoded?.let {
 +            TpmsReading(
@@ -2773,21 +2868,20 @@ index 0000000000000000000000000000000000000000..d782b6343e51625f8c0e2a5718624aea
 +        }
 +        if (reading != null) readingsById[deviceId] = reading
 +
++        val previous = candidatesById[deviceId]
++        if (previous == null && candidatesById.size >= MAX_CANDIDATES) return
 +        candidatesById[deviceId] = TpmsCandidate(
 +            deviceId = deviceId,
 +            advertisedName = parsed.advertisedName,
++            detectedProtocol = identity.protocol,
++            indicatedPosition = identity.indicatedPosition,
 +            serviceUuids = parsed.serviceUuids16,
 +            manufacturerDataLengths = parsed.manufacturerData.map(ByteArray::size),
 +            rssi = result.rssi,
++            observationCount = (previous?.observationCount ?: 0) + 1,
 +            rawAdvertisementHex = parsed.rawHex,
 +            reading = reading ?: readingsById[deviceId],
 +        )
-+
-+        // Bound the diagnostic fallback so a busy parking lot cannot grow the process forever.
-+        if (candidatesById.size > MAX_CANDIDATES) {
-+            val weakest = candidatesById.values.minByOrNull { it.rssi }
-+            if (weakest != null) candidatesById.remove(weakest.deviceId)
-+        }
 +        publish()
 +    }
 +
@@ -2796,15 +2890,13 @@ index 0000000000000000000000000000000000000000..d782b6343e51625f8c0e2a5718624aea
 +        error: TpmsScanError? = _state.value.scanError,
 +        assignments: TpmsAssignments = _state.value.assignments,
 +    ) {
-+        val orderedCandidates = candidatesById.values.sortedWith(
-+            compareByDescending<TpmsCandidate> { it.reading != null }
-+                .thenByDescending { it.rssi }
-+        )
 +        _state.value = TpmsState(
 +            scanning = scanning,
 +            scanError = error,
 +            assignments = assignments,
-+            candidates = orderedCandidates,
++            // LinkedHashMap preserves discovery order. A candidate never jumps while its signal
++            // fluctuates, which is essential when the user is activating one sensor at a time.
++            candidates = candidatesById.values.toList(),
 +            frontReading = assignments.frontDeviceId?.let(readingsById::get),
 +            rearReading = assignments.rearDeviceId?.let(readingsById::get),
 +        )
@@ -2822,11 +2914,25 @@ index 0000000000000000000000000000000000000000..d782b6343e51625f8c0e2a5718624aea
 +            .apply()
 +    }
 +
++    private fun schedulePairingTimeout() {
++        cancelPairingTimeout()
++        pairingScanTimeout = Runnable {
++            if (activeScanMode == ScanSettings.SCAN_MODE_LOW_LATENCY) stopScan()
++        }.also { mainHandler.postDelayed(it, PAIRING_SCAN_DURATION_MS) }
++    }
++
++    private fun cancelPairingTimeout() {
++        pairingScanTimeout?.let(mainHandler::removeCallbacks)
++        pairingScanTimeout = null
++    }
++
 +    companion object {
 +        private const val PREFERENCES_NAME = "tpms_pairing"
 +        private const val KEY_FRONT_ID = "front_device_id"
 +        private const val KEY_REAR_ID = "rear_device_id"
-+        private const val MAX_CANDIDATES = 24
++        /** A short activation window should show only the few explicitly recognized sensors. */
++        private const val MAX_CANDIDATES = 3
++        private const val PAIRING_SCAN_DURATION_MS = 30_000L
 +    }
 +}
 diff --git a/app/src/main/java/com/andrerinas/openheadunit/utils/Settings.kt b/app/src/main/java/com/andrerinas/openheadunit/utils/Settings.kt
@@ -22082,7 +22188,7 @@ index 0000000000000000000000000000000000000000..2e470fbea0df1be3095dc92908281f28
 +</LinearLayout>
 diff --git a/app/src/main/res/layout/item_tpms_candidate.xml b/app/src/main/res/layout/item_tpms_candidate.xml
 new file mode 100644
-index 0000000000000000000000000000000000000000..19fe63159d83dc1012e732565522c38821ca27be
+index 0000000000000000000000000000000000000000..80b50be2926844b295ce068816b2d649ea5c3167
 --- /dev/null
 +++ b/app/src/main/res/layout/item_tpms_candidate.xml
 @@ -0,0 +1,58 @@
@@ -22094,18 +22200,18 @@ index 0000000000000000000000000000000000000000..19fe63159d83dc1012e732565522c388
 +    android:layout_height="wrap_content"
 +    android:layout_marginBottom="8dp"
 +    android:background="@drawable/bg_instrument_panel"
-+    android:minHeight="78dp"
-+    android:paddingTop="8dp"
++    android:minHeight="104dp"
++    android:paddingTop="12dp"
 +    android:paddingStart="16dp"
 +    android:paddingEnd="12dp"
-+    android:paddingBottom="8dp">
++    android:paddingBottom="12dp">
 +
 +    <TextView
 +        android:id="@+id/tpms_candidate_title"
 +        android:layout_width="0dp"
 +        android:layout_height="wrap_content"
 +        android:ellipsize="end"
-+        android:maxLines="1"
++        android:maxLines="2"
 +        android:textColor="@android:color/white"
 +        android:textSize="16sp"
 +        android:textStyle="bold"
@@ -22121,7 +22227,7 @@ index 0000000000000000000000000000000000000000..19fe63159d83dc1012e732565522c388
 +        android:layout_height="wrap_content"
 +        android:layout_marginTop="4dp"
 +        android:ellipsize="end"
-+        android:maxLines="1"
++        android:maxLines="2"
 +        android:textColor="@color/tracer_text_muted"
 +        android:textSize="13sp"
 +        app:layout_constraintBottom_toBottomOf="parent"
@@ -22131,7 +22237,7 @@ index 0000000000000000000000000000000000000000..19fe63159d83dc1012e732565522c388
 +
 +    <com.google.android.material.button.MaterialButton
 +        android:id="@+id/tpms_use_candidate"
-+        android:layout_width="132dp"
++        android:layout_width="150dp"
 +        android:layout_height="52dp"
 +        android:layout_marginStart="14dp"
 +        android:minHeight="52dp"
@@ -22500,7 +22606,7 @@ index fbfa87c9bdfcec2e368a16a580920bccb6ff2598..34b1bb174dc9ce5c67f392f1966b7a65
 +    <string name="tpms_alert_dismiss">Zamknij komunikat TPMS</string>
  </resources>
 diff --git a/app/src/main/res/values-pt-rBR/strings.xml b/app/src/main/res/values-pt-rBR/strings.xml
-index 9bb069efa3d98fad82bc37cdc0cd92e5aa99dbda..50118088c003553017f96109a7c6e0bea9c7d6bf 100644
+index 9bb069efa3d98fad82bc37cdc0cd92e5aa99dbda..a461bf2fe1035043c0fbd60904c6ef7d9f37849f 100644
 --- a/app/src/main/res/values-pt-rBR/strings.xml
 +++ b/app/src/main/res/values-pt-rBR/strings.xml
 @@ -9,26 +9,28 @@
@@ -22546,7 +22652,7 @@ index 9bb069efa3d98fad82bc37cdc0cd92e5aa99dbda..50118088c003553017f96109a7c6e0be
      <string name="dedicated_home_tpms_label">TPMS</string>
      <string name="dedicated_home_tpms_unconfigured">Não configurado</string>
      <string name="dedicated_home_tpms_unconfigured_short">SEM SENSORES</string>
-@@ -37,9 +39,127 @@
+@@ -37,9 +39,131 @@
      <string name="dedicated_home_tpms_temperature">TEMPERATURA</string>
      <string name="dedicated_home_tpms_placeholder">--.-</string>
      <string name="dedicated_home_tpms_temperature_placeholder">-- °C</string>
@@ -22560,7 +22666,7 @@ index 9bb069efa3d98fad82bc37cdc0cd92e5aa99dbda..50118088c003553017f96109a7c6e0be
 +    <string name="tpms_setup_title">Sensores dos pneus</string>
 +    <string name="tpms_safety_note">SOMENTE COM O VEÍCULO PARADO</string>
 +    <string name="tpms_wheels_section">PROGRESSO DA CONFIGURAÇÃO</string>
-+    <string name="tpms_bluetooth_note">Os sensores aparecem aqui automaticamente. Não os emparelhe nas configurações do Android.</string>
++    <string name="tpms_bluetooth_note">Aqui só são ouvidos anúncios BLE. Não emparelhe sensores nas configurações do Android.</string>
 +    <string name="tpms_progress_empty">0/2 CONFIGURADOS</string>
 +    <string name="tpms_progress_partial">1/2 CONFIGURADO</string>
 +    <string name="tpms_progress_complete">2/2 CONFIGURADOS</string>
@@ -22576,21 +22682,24 @@ index 9bb069efa3d98fad82bc37cdc0cd92e5aa99dbda..50118088c003553017f96109a7c6e0be
 +    <string name="tpms_configure_rear_title">Configure o sensor traseiro</string>
 +    <string name="tpms_replace_front_title">Trocar o sensor dianteiro</string>
 +    <string name="tpms_replace_rear_title">Trocar o sensor traseiro</string>
-+    <string name="tpms_active_instruction">Movimente apenas o sensor desta roda e mantenha-o perto deste aparelho.</string>
-+    <string name="tpms_replace_instruction">Movimente o sensor substituto. A configuração atual só muda após a confirmação.</string>
++    <string name="tpms_active_instruction">Mantenha perto deste aparelho apenas o sensor desta roda. Ative-o e inicie uma captura curta.</string>
++    <string name="tpms_replace_instruction">Mantenha perto apenas o sensor substituto. Ative-o e inicie uma captura curta.</string>
 +    <string name="tpms_not_assigned">Não configurado</string>
 +    <string name="tpms_assigned_id">Sensor •••• %1$s</string>
-+    <string name="tpms_scanning_front">Procurando o sensor dianteiro…</string>
-+    <string name="tpms_scanning_rear">Procurando o sensor traseiro…</string>
-+    <string name="tpms_scan_stopped">Busca pausada</string>
-+    <string name="tpms_start_scan">Retomar busca</string>
-+    <string name="tpms_stop_scan">Pausar busca</string>
++    <string name="tpms_scanning_front">Ouvindo o sensor dianteiro…</string>
++    <string name="tpms_scanning_rear">Ouvindo o sensor traseiro…</string>
++    <string name="tpms_scan_stopped">Captura interrompida</string>
++    <string name="tpms_start_scan">Capturar · 30 s</string>
++    <string name="tpms_stop_scan">Parar captura</string>
++    <string name="tpms_capture_ready">Pronto para capturar um sensor</string>
++    <string name="tpms_capture_listening">Ouvindo um sensor ativado · até 30 s</string>
++    <string name="tpms_capture_finished">Captura concluída · escolha o sensor detectado</string>
 +    <string name="tpms_retry">Tentar novamente</string>
-+    <string name="tpms_empty_title">Nenhum sensor detectado ainda</string>
++    <string name="tpms_empty_title">Pronto para capturar um sensor</string>
 +    <string name="tpms_waiting_title">Aguardando sinal do sensor</string>
-+    <string name="tpms_empty_front_body">Movimente o sensor dianteiro e mantenha-o perto deste aparelho.</string>
-+    <string name="tpms_empty_rear_body">Movimente o sensor traseiro e mantenha-o perto deste aparelho.</string>
-+    <string name="tpms_empty_stopped_body">Retome a busca para detectar sensores próximos.</string>
++    <string name="tpms_empty_front_body">Ative apenas o sensor dianteiro perto deste aparelho e aguarde o sinal.</string>
++    <string name="tpms_empty_rear_body">Ative apenas o sensor traseiro perto deste aparelho e aguarde o sinal.</string>
++    <string name="tpms_empty_stopped_body">Ative um sensor perto deste aparelho e inicie uma captura de 30 segundos.</string>
 +    <string name="tpms_permission_title">Acesso aos sensores</string>
 +    <string name="tpms_permission_required">Permita “Dispositivos próximos” para localizar os sensores dos pneus.</string>
 +    <string name="tpms_permission_denied_title">Acesso não permitido</string>
@@ -22605,9 +22714,10 @@ index 9bb069efa3d98fad82bc37cdc0cd92e5aa99dbda..50118088c003553017f96109a7c6e0be
 +    <string name="tpms_scan_failed_title">Não foi possível buscar sensores</string>
 +    <string name="tpms_scan_failed">Verifique o Bluetooth e tente novamente.</string>
 +    <string name="tpms_candidate_known">%1$.1f psi · %2$d °C · %3$s</string>
-+    <string name="tpms_candidate_unknown">Aguardando leitura · %1$s</string>
++    <string name="tpms_candidate_unknown">Sinal capturado · %1$s</string>
 +    <string name="tpms_candidate_name">Sensor •••• %1$s</string>
 +    <string name="tpms_candidate_generic">Sensor próximo •••• %1$s</string>
++    <string name="tpms_candidate_detected">Sensor detectado •••• %1$s</string>
 +    <string name="tpms_signal_strong">sinal forte</string>
 +    <string name="tpms_signal_medium">sinal médio</string>
 +    <string name="tpms_signal_weak">sinal fraco</string>
@@ -22649,8 +22759,8 @@ index 9bb069efa3d98fad82bc37cdc0cd92e5aa99dbda..50118088c003553017f96109a7c6e0be
 +    <string name="tpms_alert_temperature_value">%1$d °C</string>
 +    <string name="tpms_alert_dismiss">Dispensar alerta TPMS</string>
 +    <plurals name="tpms_candidates_found">
-+        <item quantity="one">1 sensor encontrado. Selecione o sensor que você acabou de movimentar.</item>
-+        <item quantity="other">%1$d sensores encontrados. Selecione o sensor que você acabou de movimentar.</item>
++        <item quantity="one">1 sensor compatível capturado. Confirme o sensor que você acabou de ativar.</item>
++        <item quantity="other">%1$d sensores compatíveis capturados. Confirme o sensor que você acabou de ativar.</item>
 +    </plurals>
 +    <string name="no_paired_bluetooth_devices">Nenhum dispositivo Bluetooth pareado foi encontrado.</string>
 +    <string name="unknown_bluetooth_device">Dispositivo sem nome</string>
@@ -22677,7 +22787,7 @@ index 9bb069efa3d98fad82bc37cdc0cd92e5aa99dbda..50118088c003553017f96109a7c6e0be
      <string name="video">Android Auto</string>
      <string name="self_mode">Self Mode</string>
      <string name="to_android_auto">Ir para o Android Auto</string>
-@@ -202,9 +322,11 @@
+@@ -202,9 +326,11 @@
      <string name="auto_start_oem_warning">Este dispositivo pode exigir a ativação do início automático e a remoção da otimização de bateria ou restrições em segundo plano para este aplicativo.\n\nEm centrais multimídia com Quick Boot (inicialização rápida), o início automático pode não funcionar. Procure \"DuraSpeed\" nas configurações do sistema e ative este aplicativo lá. Em algumas centrais, o DuraSpeed está oculto e você pode precisar de um aplicativo como \"Hidden Settings\" para encontrá-lo. Se você não tem DuraSpeed, tente desativar o Quick Boot.</string>
      <string name="auto_start_on_boot_label">Iniciar na inicialização</string>
      <string name="auto_start_on_boot_description">Abrir o app automaticamente quando o dispositivo iniciar. Requer a permissão \'Exibir sobre outros apps\' no Android 10+</string>
@@ -22690,7 +22800,7 @@ index 9bb069efa3d98fad82bc37cdc0cd92e5aa99dbda..50118088c003553017f96109a7c6e0be
      <string name="bt_device_not_set">Não definido</string>
      <string name="bt_permission_denied_title">Permissão de Bluetooth necessária</string>
      <string name="bt_permission_denied_message">A permissão de Bluetooth é necessária para selecionar dispositivos pareados. Conceda-a nas configurações do app.</string>
-@@ -447,7 +569,7 @@
+@@ -447,7 +573,7 @@
      <string name="kill_on_disconnect_screen_on_warning">Você tem \"Iniciar ao ligar a tela\" ativado. Esta configuração abre o app toda vez que a tela é ligada. Combinado com fechar ao desconectar, o app será fechado após a desconexão, mas reabrirá imediatamente quando a tela ligar novamente, criando um loop de reinício.</string>
      <string name="kill_on_disconnect_conflicts_disabled">As configurações conflitantes foram desativadas</string>
      <string name="wifi_disabled_info">Info: O Wi-Fi está desativado.</string>
@@ -22699,7 +22809,7 @@ index 9bb069efa3d98fad82bc37cdc0cd92e5aa99dbda..50118088c003553017f96109a7c6e0be
  
      <!-- Vehicle Info Settings -->
      <string name="vehicle_info_settings">Informações do veículo</string>
-@@ -561,7 +683,7 @@
+@@ -561,7 +687,7 @@
      <string name="mic_auto_gain_control">Controle automático de ganho (AGC)</string>
      <string name="mic_auto_gain_control_description">Ajusta automaticamente o volume do microfone. Desative se o volume estiver instável.</string>
      <string name="mic_feature_unsupported">Este recurso não é compatível com seu dispositivo.</string>
@@ -22838,7 +22948,7 @@ index ca9c5847ef8bc3f952014d2bf9699f66bef8b84c..cecc98c35d322aaaf3258ed5a11a9f6d
      <!-- Segmented Button Colors -->
      <color name="segmented_button_stroke">#808080</color>
 diff --git a/app/src/main/res/values/strings.xml b/app/src/main/res/values/strings.xml
-index 1b9803d36d66892580fa5bbba0d465024e712280..a9249e40d16c76b10f23fdfcfe240eb40227c219 100644
+index 1b9803d36d66892580fa5bbba0d465024e712280..3a32fb9079c649dbc0ed3a9a0b63884b9d637056 100644
 --- a/app/src/main/res/values/strings.xml
 +++ b/app/src/main/res/values/strings.xml
 @@ -172,26 +172,28 @@
@@ -22885,7 +22995,7 @@ index 1b9803d36d66892580fa5bbba0d465024e712280..a9249e40d16c76b10f23fdfcfe240eb4
      <string name="dedicated_home_tpms_label">TPMS</string>
      <string name="dedicated_home_tpms_unconfigured">Not configured</string>
      <string name="dedicated_home_tpms_unconfigured_short">NO SENSORS</string>
-@@ -200,9 +202,127 @@
+@@ -200,9 +202,131 @@
      <string name="dedicated_home_tpms_temperature">TEMPERATURE</string>
      <string name="dedicated_home_tpms_placeholder">--.-</string>
      <string name="dedicated_home_tpms_temperature_placeholder">-- °C</string>
@@ -22899,7 +23009,7 @@ index 1b9803d36d66892580fa5bbba0d465024e712280..a9249e40d16c76b10f23fdfcfe240eb4
 +    <string name="tpms_setup_title">Tire sensors</string>
 +    <string name="tpms_safety_note">ONLY WHILE THE VEHICLE IS PARKED</string>
 +    <string name="tpms_wheels_section">SETUP PROGRESS</string>
-+    <string name="tpms_bluetooth_note">Sensors appear here automatically. Don’t pair them in Android settings.</string>
++    <string name="tpms_bluetooth_note">This listens only for BLE broadcasts. Don’t pair sensors in Android settings.</string>
 +    <string name="tpms_progress_empty">0/2 SET</string>
 +    <string name="tpms_progress_partial">1/2 SET</string>
 +    <string name="tpms_progress_complete">2/2 SET</string>
@@ -22915,21 +23025,24 @@ index 1b9803d36d66892580fa5bbba0d465024e712280..a9249e40d16c76b10f23fdfcfe240eb4
 +    <string name="tpms_configure_rear_title">Set up the rear sensor</string>
 +    <string name="tpms_replace_front_title">Replace the front sensor</string>
 +    <string name="tpms_replace_rear_title">Replace the rear sensor</string>
-+    <string name="tpms_active_instruction">Move only this wheel’s sensor and keep it near this device.</string>
-+    <string name="tpms_replace_instruction">Move the replacement sensor. The current assignment changes only after confirmation.</string>
++    <string name="tpms_active_instruction">Keep only this wheel’s sensor near this device. Activate it, then begin a short capture.</string>
++    <string name="tpms_replace_instruction">Keep only the replacement sensor nearby. Activate it, then begin a short capture.</string>
 +    <string name="tpms_not_assigned">Not set</string>
 +    <string name="tpms_assigned_id">Sensor •••• %1$s</string>
-+    <string name="tpms_scanning_front">Looking for the front sensor…</string>
-+    <string name="tpms_scanning_rear">Looking for the rear sensor…</string>
-+    <string name="tpms_scan_stopped">Search paused</string>
-+    <string name="tpms_start_scan">Resume search</string>
-+    <string name="tpms_stop_scan">Pause search</string>
++    <string name="tpms_scanning_front">Listening for the front sensor…</string>
++    <string name="tpms_scanning_rear">Listening for the rear sensor…</string>
++    <string name="tpms_scan_stopped">Capture stopped</string>
++    <string name="tpms_start_scan">Capture · 30 s</string>
++    <string name="tpms_stop_scan">Stop capture</string>
++    <string name="tpms_capture_ready">Ready to capture one sensor</string>
++    <string name="tpms_capture_listening">Listening for one activated sensor · up to 30 s</string>
++    <string name="tpms_capture_finished">Capture complete · choose the detected sensor</string>
 +    <string name="tpms_retry">Try again</string>
-+    <string name="tpms_empty_title">No sensor detected yet</string>
++    <string name="tpms_empty_title">Ready to capture one sensor</string>
 +    <string name="tpms_waiting_title">Waiting for a sensor signal</string>
-+    <string name="tpms_empty_front_body">Move the front sensor and keep it near this device.</string>
-+    <string name="tpms_empty_rear_body">Move the rear sensor and keep it near this device.</string>
-+    <string name="tpms_empty_stopped_body">Resume the search to detect nearby sensors.</string>
++    <string name="tpms_empty_front_body">Activate only the front sensor nearby, then wait for its signal.</string>
++    <string name="tpms_empty_rear_body">Activate only the rear sensor nearby, then wait for its signal.</string>
++    <string name="tpms_empty_stopped_body">Activate one sensor nearby, then begin a 30-second capture.</string>
 +    <string name="tpms_permission_title">Sensor access</string>
 +    <string name="tpms_permission_required">Allow Nearby devices to find the tire sensors.</string>
 +    <string name="tpms_permission_denied_title">Access not allowed</string>
@@ -22944,9 +23057,10 @@ index 1b9803d36d66892580fa5bbba0d465024e712280..a9249e40d16c76b10f23fdfcfe240eb4
 +    <string name="tpms_scan_failed_title">Couldn’t search for sensors</string>
 +    <string name="tpms_scan_failed">Check Bluetooth and try again.</string>
 +    <string name="tpms_candidate_known">%1$.1f psi · %2$d °C · %3$s</string>
-+    <string name="tpms_candidate_unknown">Waiting for a reading · %1$s</string>
++    <string name="tpms_candidate_unknown">Signal captured · %1$s</string>
 +    <string name="tpms_candidate_name">Sensor •••• %1$s</string>
 +    <string name="tpms_candidate_generic">Nearby sensor •••• %1$s</string>
++    <string name="tpms_candidate_detected">Detected sensor •••• %1$s</string>
 +    <string name="tpms_signal_strong">strong signal</string>
 +    <string name="tpms_signal_medium">medium signal</string>
 +    <string name="tpms_signal_weak">weak signal</string>
@@ -22988,8 +23102,8 @@ index 1b9803d36d66892580fa5bbba0d465024e712280..a9249e40d16c76b10f23fdfcfe240eb4
 +    <string name="tpms_alert_temperature_value">%1$d °C</string>
 +    <string name="tpms_alert_dismiss">Dismiss TPMS alert</string>
 +    <plurals name="tpms_candidates_found">
-+        <item quantity="one">1 sensor found. Select the sensor you just moved.</item>
-+        <item quantity="other">%1$d sensors found. Select the sensor you just moved.</item>
++        <item quantity="one">1 compatible sensor captured. Confirm the sensor you just activated.</item>
++        <item quantity="other">%1$d compatible sensors captured. Confirm the sensor you just activated.</item>
 +    </plurals>
 +    <string name="no_paired_bluetooth_devices">No paired Bluetooth devices were found.</string>
 +    <string name="unknown_bluetooth_device">Unnamed device</string>
@@ -23016,7 +23130,7 @@ index 1b9803d36d66892580fa5bbba0d465024e712280..a9249e40d16c76b10f23fdfcfe240eb4
      <string name="video">Android Auto</string>
      <string name="self_mode">Self Mode</string>
      <string name="to_android_auto">To Android Auto</string>
-@@ -384,7 +504,9 @@
+@@ -384,7 +508,9 @@
      <string name="auto_start_on_boot_description">Open the app automatically when the device starts up. Requires \'Display over other apps\' permission on Android 10+</string>
      <string name="auto_start_screen_on_label">Start on screen on</string>
      <string name="auto_start_screen_on_description">Open the app every time the screen turns on. Ideal for head units that never fully shut down or use fast boot modes where the other auto-start options don\'t work. Not recommended for phones or tablets.</string>
@@ -23027,7 +23141,7 @@ index 1b9803d36d66892580fa5bbba0d465024e712280..a9249e40d16c76b10f23fdfcfe240eb4
      <string name="bt_device_not_set">Not set</string>
      <string name="auto_start_wifi_label">Auto-start on WiFi</string>
      <string name="auto_start_wifi_description">Automatically open Open Headunit when connected to a specific WiFi SSID.</string>
-@@ -709,8 +831,8 @@
+@@ -709,8 +835,8 @@
      <string name="kill_on_disconnect_screen_on_warning">You have \"Start on screen on\" enabled. This setting opens the app every time the screen turns on. Combined with closing on disconnect, the app will close after disconnection but reopen immediately when the screen turns on again, creating a restart loop.</string>
  
      <string name="wifi_disabled_info">Info: Wi-Fi is disabled.</string>
@@ -23474,14 +23588,15 @@ index 0000000000000000000000000000000000000000..15f18a910bfae9ec1bcf9ce900a9725c
 +}
 diff --git a/app/src/test/java/com/andrerinas/openheadunit/tpms/TpmsAdvertisementDecoderTest.kt b/app/src/test/java/com/andrerinas/openheadunit/tpms/TpmsAdvertisementDecoderTest.kt
 new file mode 100644
-index 0000000000000000000000000000000000000000..acca6c962a84c30a92b969b97a1ca581c2a0cd52
+index 0000000000000000000000000000000000000000..75b8892d2446a3500f08a3edf39e3a525c712179
 --- /dev/null
 +++ b/app/src/test/java/com/andrerinas/openheadunit/tpms/TpmsAdvertisementDecoderTest.kt
-@@ -0,0 +1,62 @@
+@@ -0,0 +1,90 @@
 +package com.andrerinas.openheadunit.tpms
 +
 +import org.junit.Assert.assertArrayEquals
 +import org.junit.Assert.assertEquals
++import org.junit.Assert.assertFalse
 +import org.junit.Assert.assertNull
 +import org.junit.Assert.assertTrue
 +import org.junit.Test
@@ -23520,12 +23635,39 @@ index 0000000000000000000000000000000000000000..acca6c962a84c30a92b969b97a1ca581
 +    }
 +
 +    @Test
-+    fun `does not decode an unrelated seven-byte manufacturer packet`() {
++    fun `does not treat an unrelated seven-byte manufacturer packet as a pairing candidate`() {
 +        val raw = hex("08FF281D130105A376")
 +        val parsed = TpmsAdvertisementDecoder.parse(raw)
 +
 +        assertNull(TpmsAdvertisementDecoder.decode(parsed))
-+        assertTrue(TpmsAdvertisementDecoder.isLikelyTpms(parsed, rssi = -50))
++        assertFalse(TpmsAdvertisementDecoder.isLikelyTpms(parsed, rssi = -50))
++    }
++
++    @Test
++    fun `identifies the static MotorCare automatic-bind advertisement without Android pairing`() {
++        // Shape recovered from a static inspection of MotorCare 1.3.0. The vendor checks the
++        // front marker at raw hex 22..23 and the six-digit sensor identifier at 28..33.
++        val raw = hex("0201060EFF0100AABBCCDD80EE99ABCDEFFF0C0954504D5331414243444546")
++
++        val identity = TpmsAdvertisementDecoder.pairingIdentity(
++            TpmsAdvertisementDecoder.parse(raw)
++        )
++
++        requireNotNull(identity)
++        assertEquals(TpmsProtocol.MOTORCARE_TPMS, identity.protocol)
++        assertEquals("ABCDEF", identity.sensorId)
++        assertEquals(TirePosition.FRONT, identity.indicatedPosition)
++    }
++
++    @Test
++    fun `rejects a MotorCare name when its wheel marker disagrees`() {
++        val raw = hex("0201060EFF0100AABBCCDD81EE99ABCDEFFF0C0954504D5331414243444546")
++
++        assertNull(
++            TpmsAdvertisementDecoder.pairingIdentity(
++                TpmsAdvertisementDecoder.parse(raw)
++            )
++        )
 +    }
 +
 +    @Test
@@ -23838,5 +23980,53 @@ index 0000000000000000000000000000000000000000..884e8f59e91ee2e45ee7ce202ad61b40
 +        assertTrue(settings.contains("prefs.getString(\"app-language\", \"\")"))
 +        assertTrue(localeHelper.contains("const val SYSTEM_DEFAULT = \"\""))
 +        assertTrue(localeHelper.contains("if (localeString.isEmpty())"))
++    }
++}
+diff --git a/app/src/test/java/com/andrerinas/openheadunit/tpms/TpmsPairingCaptureContractTest.kt b/app/src/test/java/com/andrerinas/openheadunit/tpms/TpmsPairingCaptureContractTest.kt
+new file mode 100644
+index 0000000000000000000000000000000000000000..b4c7d5b3ea2d052ea2866aebf67e3d3820647bce
+--- /dev/null
++++ b/app/src/test/java/com/andrerinas/openheadunit/tpms/TpmsPairingCaptureContractTest.kt
+@@ -0,0 +1,42 @@
++package com.andrerinas.openheadunit.tpms
++
++import java.io.File
++import org.junit.Assert.assertFalse
++import org.junit.Assert.assertTrue
++import org.junit.Test
++
++class TpmsPairingCaptureContractTest {
++    @Test
++    fun `setup is a bounded activation capture instead of a live ambient device list`() {
++        val repository = File(
++            "src/main/java/com/andrerinas/openheadunit/tpms/TpmsRepository.kt"
++        ).readText()
++        val fragment = File(
++            "src/main/java/com/andrerinas/openheadunit/main/TpmsPairingFragment.kt"
++        ).readText()
++        val decoder = File(
++            "src/main/java/com/andrerinas/openheadunit/tpms/TpmsAdvertisementDecoder.kt"
++        ).readText()
++
++        assertTrue(repository.contains("private const val PAIRING_SCAN_DURATION_MS = 30_000L"))
++        assertTrue(repository.contains("candidates = candidatesById.values.toList()"))
++        assertFalse(repository.contains("thenByDescending { it.rssi }"))
++        assertTrue(fragment.contains("repository.stopScan()"))
++        assertFalse(fragment.contains("requestPermissionAndScan(userInitiated = false)"))
++        assertTrue(decoder.contains("do not treat a strong generic manufacturer packet"))
++        assertFalse(decoder.contains("rssi >= -72"))
++    }
++
++    @Test
++    fun `captured sensor cards are stable and large enough to inspect`() {
++        val adapter = File(
++            "src/main/java/com/andrerinas/openheadunit/main/TpmsCandidateAdapter.kt"
++        ).readText()
++        val layout = File("src/main/res/layout/item_tpms_candidate.xml").readText()
++
++        assertTrue(adapter.contains("ListAdapter<TpmsCandidate"))
++        assertFalse(adapter.contains("notifyDataSetChanged()"))
++        assertTrue(layout.contains("android:minHeight=\"104dp\""))
++        assertTrue(layout.contains("android:layout_width=\"150dp\""))
 +    }
 +}
