@@ -1,8 +1,8 @@
 ---
 title: Canonical installed state
 status: current
-last_verified: 2026-08-05
-last_updated: 2026-08-05
+last_verified: 2026-08-06
+last_updated: 2026-08-06
 audience: operators, maintainers, and LLM agents
 ---
 
@@ -29,8 +29,9 @@ This file is the source of truth for what is currently installed, configured, ve
 |---|---|---|
 | Active app label | `Open Headunit TPMS` | Verified with `aapt` and on-device install |
 | Active package | `com.andrerinas.headunitrevived.hfpslc` | Verified |
-| Version | `3.2.0-hfp-slc`, version code 91 | Verified |
-| Installed APK SHA-256 | `c46be61de0c99b94caac61e808a9697defb4bac7201f00c4cf0e8d8a1cb44b13` | `v0.2.0` release candidate; verified from a clean patch application and from the installed package |
+| Version | `3.2.0-hfp-slc`, version code 95 | Verified |
+| Installed APK SHA-256 | `c6703403548542bc80ad881f814fd1b6e6e22576742d8649f4aec391f7090f81` | Verified from the exact `v0.3.0` clean patch candidate, local artifact, and installed package |
+| Public receiver release | `v0.3.0` | Exact candidate verified on the physical receiver |
 | Official Open Headunit | installed but disabled as rollback | Verified in cleanup record |
 | HeadlessUnit | installed but disabled; not in the validated path | Historical/rollback |
 | App default language | English base resources; system locale selected by default | Verified by resources and locale test |
@@ -44,7 +45,7 @@ See [`../apks/README.md`](../apks/README.md) for source, certificate, and rollba
 | Bluetooth wake and HFP SLC | Verified |
 | Android Auto Bluetooth messages 1/2/3 | Verified |
 | Wi-Fi Direct group | Verified at 5 GHz with the XCover as Group Owner |
-| Projection | Verified with Android Auto 17.0 on the tested phone |
+| Projection | Verified with Android Auto 17.0 on the exact version-code-95 `v0.3.0` candidate; connection and app-restart reconnection exercised |
 | Measured app-restart reconnect | approximately 10 seconds |
 | Cold boot reconnect | Verified |
 | Second Samsung boot event deduplication | Verified |
@@ -66,12 +67,21 @@ See [`../apks/README.md`](../apks/README.md) for source, certificate, and rollba
 | Battery Protect | enabled |
 | Automatic battery saver | 20% |
 | Thermal limits | unchanged |
+| Android default launcher | receiver `MainActivity`; One UI Home retained only for rollback |
+| Receiver ART filter | `speed`; reapplied and read back after the final APK installation |
+| System animation scales | window, transition, and animator duration all `0.5` |
 | Wireless ADB after boot | app may restore `adb_wifi_enabled=1` after one-time `WRITE_SECURE_SETTINGS` grant |
 | Rain touch lock | programmable side key `keyCode 1015`; home interception verified on the physical XCover; projection path contract-tested |
 
+Brightness 255 and Samsung Extra Brightness are intentionally retained because direct-sun legibility is safety-relevant for this installation. Samsung documents Extra Brightness for strong/direct sunlight and notes its higher battery use. The XCover Pro uses a TFT display, so AMOLED burn-in guidance does not apply. Thermal protections remain unchanged; direct-sun, charging, and navigation-load temperature measurement is still pending. See Samsung's [XCover Pro specifications](https://www.samsung.com/us/business/support/owners/product/galaxy-xcover-pro-unlocked/), [Extra Brightness guidance](https://www.samsung.com/us/support/answer/ANS10003662/), and [overheating guidance](https://www.samsung.com/hk_en/support/mobile-devices/how-to-prevent-the-overheating-of-your-galaxy-device/).
+
 ## Dedicated home and copy
 
-- **Installed:** the home shows Android Auto, TPMS, audio output role, settings, and the olive motorcycle image.
+- **Installed:** the home shows Android Auto, TPMS, audio output role, receiver settings, a native **Apps** action, and the olive motorcycle image.
+- The receiver is the Android `HOME` application. **Apps** is anchored at the left of the 66 dp bottom bar; **Connect** is anchored at the right. Both are 48 dp high with 9 dp top/bottom and matching 9 dp outer insets.
+- **Apps** opens a receiver-owned two-column drawer. **System settings** is its pinned first item; other enabled launchable apps flow left-to-right and top-to-bottom in alphabetical order. Each card centers its icon and label together. The header has only a Back action: both that action and Android Back return to receiver home, while Android Back from System Settings returns to the drawer first. One UI Home is not a daily navigation route.
+- The idle state does not render `READY` or `PRONTO`. `Connecting…` and `Return` are expressed only through the Android Auto button, with localized accessible state copy.
+- App-drawer and System Settings routes open directly, without parked-use confirmation dialogs.
 - The rejected clock, power, charge, and battery-temperature dashboard is not present in the installed build.
 - Self Mode, USB, CarPlay, local OBD, and unrelated app shortcuts are hidden.
 - Dedicated headers and connection progress use `Android Auto` without repeating `Wireless`.
@@ -100,9 +110,9 @@ See [`../apks/README.md`](../apks/README.md) for source, certificate, and rollba
 
 Do not treat provisional thresholds as motorcycle tire specifications. Calibrate them separately for front and rear tires after the physical sensors arrive and are compared with a known gauge.
 
-## TPMS source candidate not yet installed
+## Installed TPMS source candidate
 
-The active installed APK remains `v0.2.0`. A newer source candidate is under verification and is **not** physical-device evidence or an installed-state claim. It changes setup from an always-on ambient list to a user-started, 30-second activation capture with stable candidate order. Static inspection of MotorCare 1.3.0 also yielded a provisional `TPMS1`/`TPMS2` identity rule and six-digit sensor identifier. The actual LEEPEE/MotorCare kit must still be captured before this is considered compatible or able to decode telemetry.
+Version code 95 retains the user-started, 30-second activation capture with stable candidate order. Static inspection of MotorCare 1.3.0 yielded a provisional `TPMS1`/`TPMS2` identity rule and six-digit sensor identifier. Installation is not physical sensor evidence: the actual LEEPEE/MotorCare kit must still be captured before this is considered compatible or able to decode telemetry.
 
 ## Disabled package strategy
 
@@ -111,14 +121,17 @@ Cleanup batches use `pm disable-user --user 0`, not removal. Matching rollback s
 ## Verified test set
 
 - patched Open Headunit unit tests and `assembleGithubDebug`;
-- clean application of both repository patches, full unit suite, and APK assembly for the exact `v0.2.0` candidate;
+- clean application of both repository patches, full unit suite, and APK assembly for the exact installed `v0.3.0` version-code-95 candidate;
 - HFP command parsing/order and optional codec negotiation;
-- Native Android Auto projection and reconnect after an app restart with the exact `v0.2.0` candidate;
+- Native Android Auto projection and reconnect after an app restart with the exact `v0.3.0` candidate;
 - landscape layout contracts and cold-start crash regression;
 - power-connected wake and unplugged Doze behavior;
 - automatic Native Android Auto retry cancellation after a simulated power disconnect, powered retry restoration after reset, and ten-second startup wake-lock release on the physical XCover;
 - TPMS parser, assignment, expiration, critical evaluation, localization coverage, and overlay contract;
 - physical-device visual checks for the home and simulated TPMS alert;
+- physical-device visual checks for the version-code-95 equal-height launcher bar, title-free native two-column drawer, centered card content, direct System Settings route, visible Back action, and Android Back return;
+- physical-device rain-lock interception of **Apps** on home and **System settings** inside the native drawer;
+- launcher provisioning and its matching One UI Home rollback script, with the receiver restored as the default launcher afterward;
 - side-key `keyCode 1015`, home touch interception, and lock/unlock feedback on the physical XCover;
 - application-wide and projection-activity touch-lock contract tests;
 - Spanish per-app locale followed by return to the device's system locale.
@@ -134,7 +147,7 @@ Cleanup batches use `pm disable-user --user 0`, not removal. Matching rollback s
 7. Calibrate front/rear pressure thresholds against a known gauge.
 8. Repeat the touch-lock interception check during a live Android Auto projection.
 9. Reassess the Yamaha/Tracer theme if the project's personal, non-commercial scope changes.
-10. Repeat the overnight unplugged discharge measurement with `v0.2.0`; the retry cancellation is verified, but the long-duration battery improvement is not yet measured.
+10. Repeat the overnight unplugged discharge measurement with version code 95; retry cancellation is verified on the earlier baseline, but the long-duration battery improvement is not yet measured.
 
 ## Public repository privacy state
 
@@ -152,4 +165,6 @@ Repository ownership remains visible through the hosting platform by design. Rem
 - Boot/ADB rollback: `scripts/rollback-dedicated-boot.sh`
 - Orientation rollback: `scripts/rollback-landscape.sh`
 - Notification volume rollback: `scripts/rollback-silent-notifications.sh`
+- Launcher rollback: `scripts/rollback-dedicated-launcher.sh`
+- Receiver performance rollback: `scripts/rollback-receiver-performance.sh`
 - Experimental app removal: `adb -s <xcover-serial> uninstall com.andrerinas.headunitrevived.hfpslc`

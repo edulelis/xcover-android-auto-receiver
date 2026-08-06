@@ -30,7 +30,7 @@ android_sdk_root=${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}
 upstream_commit=581a55f26fe74b2c93eae5778ddcd683eb08b113
 expected_package=com.andrerinas.headunitrevived.hfpslc
 expected_version_name=3.2.0-hfp-slc
-expected_version_code=91
+expected_version_code=95
 expected_certificate_sha256=${XCOVER_EXPECTED_CERT_SHA256:-bc31e8db447636a30d2f1f97bd8ca190b110c33395d2321690a995171e72eac1}
 
 if [ -z "$android_sdk_root" ]; then

@@ -1,7 +1,7 @@
 ---
 title: Installation and operation guide
 status: current for the verified device pair
-last_verified: 2026-08-05
+last_verified: 2026-08-06
 audience: installers, riders, and maintainers
 ---
 
@@ -148,7 +148,7 @@ Return to the receiver home:
 - select **Connect** when the intended phone was already saved;
 - press and hold **Connect** to open the paired-device selector when the phone is missing or the wrong phone was saved.
 
-Choose the paired projecting phone. The home should move from **Ready** to a connection-in-progress state.
+Choose the paired projecting phone. The home should show **Connecting** while it prepares the wireless connection.
 
 Watch the projecting phone and accept its Android Auto confirmation when prompted. The receiver cannot approve this prompt on the phone's behalf.
 
@@ -207,7 +207,7 @@ On the configured receiver:
 2. apply external power to the XCover;
 3. wait for the screen to wake and the receiver app to open;
 4. allow approximately ten seconds for reconnection;
-5. if the home remains at **Ready**, select **Connect** once.
+5. if projection does not start, select **Connect** once.
 
 No app needs to be opened on the projecting phone. Android Auto may move that phone away from its normal Wi-Fi network while it joins the XCover Wi-Fi Direct group.
 
@@ -279,7 +279,10 @@ The inventory excludes accounts, contacts, messages, saved networks, Bluetooth p
 4. Configure silent notifications if wanted.
 5. Decide whether the device will have no secure lock credential before applying dedicated boot behavior.
 6. Apply optional cleanup batches one at a time.
-7. Reboot and validate after every category.
+7. Install and exercise a receiver APK that exposes the dedicated `HOME` role.
+8. Apply receiver performance settings, then select the receiver as the default launcher.
+9. Confirm **Apps** opens the receiver's native drawer and its first item opens **System settings**.
+10. Reboot and validate after every category.
 
 ### Commands
 
@@ -288,6 +291,16 @@ scripts/configure-landscape.sh <receiver-serial>
 scripts/configure-power-baseline.sh <receiver-serial>
 scripts/configure-unplugged-sleep.sh <receiver-serial>
 scripts/configure-silent-notifications.sh <receiver-serial>
+scripts/configure-receiver-performance.sh <receiver-serial>
+scripts/configure-dedicated-launcher.sh <receiver-serial>
+```
+
+The performance script compiles the installed receiver DEX with ART's `speed` filter and sets all three system animation scales to `0.5`. APK replacement invalidates the compiled output, so rerun the script after each receiver update. Its rollback requests Android's normal profile-guided filter and restores 1× animation timing; on this receiver, an app without a collected profile may report `verify` afterward.
+
+The launcher script keeps One UI Home installed and enabled for rollback, but daily use remains inside the receiver. **Apps** opens the receiver's own two-column drawer directly, without a parked-use confirmation. **System settings** is pinned as its first item and also opens directly, followed left-to-right and then downward by enabled apps in alphabetical order. Each card centers its icon and label. The drawer header contains only a Back action; it and Android Back return to receiver home, while Android Back from System settings returns to the drawer. Aggressive cleanup may leave only the settings item visible. Pressing Home returns to the receiver. Restore One UI Home as the default at any time with:
+
+```sh
+scripts/rollback-dedicated-launcher.sh <receiver-serial>
 ```
 
 `configure-dedicated-boot.sh` disables only an unsecured lock screen, grants the receiver `WRITE_SECURE_SETTINGS`, and requests Wireless debugging restoration. Review it before use:
@@ -314,10 +327,11 @@ Every cleanup script uses reversible `pm disable-user --user 0` operations and h
 Verify:
 
 - boot and unsecured unlock behavior;
-- One UI Home and Settings;
+- receiver Home behavior, native **Apps** drawer, **System settings**, and One UI Home rollback;
 - Wi-Fi, Bluetooth, and location;
 - charging and powered brightness;
 - Android Auto connection and reconnection;
+- ART compiler status `speed` and animation scales `0.5` after performance provisioning;
 - unplugged 30-second screen timeout;
 - the matching rollback command.
 

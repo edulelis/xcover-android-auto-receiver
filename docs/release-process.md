@@ -1,7 +1,7 @@
 ---
 title: Public repository and APK release process
 status: current
-last_verified: 2026-08-04
+last_verified: 2026-08-06
 audience: maintainers and release operators
 ---
 
@@ -65,10 +65,10 @@ The repository must report `PUBLIC`, and the working tree must be clean before p
 
 ## Repeatable APK release
 
-The examples below use `v0.2.0`. Replace it with one new semantic version and use the same value throughout:
+The examples below use `v0.3.0`. Replace it with one new semantic version and use the same value throughout:
 
 ```sh
-release_tag=v0.2.0
+release_tag=v0.3.0
 release_dir="tmp/release/$release_tag"
 apk_file="$release_dir/open-headunit-tpms-xcover-$release_tag-debug.apk"
 notes_file="docs/releases/$release_tag.md"

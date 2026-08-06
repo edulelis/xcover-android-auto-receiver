@@ -1,14 +1,42 @@
 ---
 title: Sideloaded APK ledger
 status: maintained
-last_updated: 2026-08-05
+last_updated: 2026-08-06
 ---
 
 # Sideloaded APK ledger
 
 APK binaries are not committed to this repository. Before installing an APK, record its source, package identity, version, SHA-256 digest, signing certificate, purpose, and verification date here.
 
-## Active receiver: Open Headunit TPMS
+## Active public receiver launcher build: Open Headunit TPMS v0.3.0
+
+| Field | Value |
+| --- | --- |
+| Purpose | Dedicated receiver with bounded TPMS capture, Android `HOME` role, native app drawer, and performance provisioning |
+| Package | `com.andrerinas.headunitrevived.hfpslc` |
+| Display label | `Open Headunit TPMS` |
+| Version | `3.2.0-hfp-slc` (`versionCode=95`) |
+| Upstream | [Open Headunit](https://github.com/andreknieriem/open-headunit), commit `581a55f26fe74b2c93eae5778ddcd683eb08b113` |
+| Base patch | [`../patches/open-headunit-hfp-slc.patch`](../patches/open-headunit-hfp-slc.patch) |
+| Incremental patch | [`../patches/open-headunit-tpms-pairing.patch`](../patches/open-headunit-tpms-pairing.patch) |
+| Local build artifact | `tmp/release/v0.3.0/open-headunit-tpms-xcover-v0.3.0-debug.apk` |
+| Public release | [`v0.3.0`](../../../releases/tag/v0.3.0) |
+| Public asset | `open-headunit-tpms-xcover-v0.3.0-debug.apk` |
+| APK SHA-256 | `c6703403548542bc80ad881f814fd1b6e6e22576742d8649f4aec391f7090f81` |
+| Base patch SHA-256 | `5758bd9b46dc8355eccba5729d7227c43d6b385927d51965087a5d089c4c1ab1` |
+| Incremental patch SHA-256 | `e4921c99e7766cd7a270851fc8e962df7ecaf2c663679d1aca9233bc2085e0eb` |
+| Signing certificate | Android debug certificate: `C=US, O=Android, CN=Android Debug` |
+| Certificate SHA-256 | `bc31e8db447636a30d2f1f97bd8ca190b110c33395d2321690a995171e72eac1` |
+| Build date | 2026-08-06 |
+| Current status | Exact public release candidate installed; local and installed hashes match; clean-patch tests/build, Android Auto connection/reconnection, and physical launcher routes verified |
+
+The receiver is Android's default launcher. **Apps** opens a receiver-owned two-column drawer, with **System settings** pinned first and enabled launchable apps following alphabetically. Cards flow left-to-right and top-to-bottom; each card centers its icon and label as one group. The drawer header contains only a Back action, and Android's native Back behavior returns to the receiver home. No launcher or settings route shows a parked-use confirmation. One UI Home remains installed and enabled only for rollback. The idle bar shows no redundant ready label; `Connecting…` and `Return` are states of the Android Auto button itself.
+
+The `githubDebug` artifact retains the established Android debug signing identity and package suffix, but its application manifest is intentionally non-debuggable. Android otherwise forces debuggable applications to the `verify` compiler filter and ignores their AOT output. Dedicated TPMS test surfaces use a separate build flag and remain available.
+
+ART `speed` compilation and all three 0.5× animation scales were reapplied after the final installation. Physical checks covered equal-height bottom actions, the native drawer, centered card content, direct System Settings, the visible Back action, and Android Back return through drawer and Home. The exact `v0.3.0` candidate also completed Android Auto connection and reconnection after an app restart.
+
+## Previous public receiver release: Open Headunit TPMS v0.2.0
 
 | Field | Value |
 | --- | --- |
@@ -28,7 +56,7 @@ APK binaries are not committed to this repository. Before installing an APK, rec
 | Signing certificate | Android debug certificate: `C=US, O=Android, CN=Android Debug` |
 | Certificate SHA-256 | `bc31e8db447636a30d2f1f97bd8ca190b110c33395d2321690a995171e72eac1` |
 | Build and installation date | 2026-08-05 |
-| Current status | Installed and verified for wireless projection; physical TPMS sensor validation pending |
+| Current status | Previous installed baseline and current public release; superseded locally by version code 95 |
 
 ### Verified behavior
 

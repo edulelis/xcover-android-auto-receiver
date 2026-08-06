@@ -1,23 +1,87 @@
 diff --git a/app/build.gradle.kts b/app/build.gradle.kts
-index b0d5d88d1500e6fa5474d22cab151ce48a899494..24a589cf630efcd213a168cf3ef74eb4ab1ab865 100644
+index b0d5d88d1500e6fa5474d22cab151ce48a899494..96d606e3c4139c912d8a120ed734c6a65241d187 100644
 --- a/app/build.gradle.kts
 +++ b/app/build.gradle.kts
-@@ -145,8 +145,8 @@ android {
+@@ -74,7 +74,7 @@ android {
+         applicationId = "com.andrerinas.headunitrevived"
+         minSdk = 16
+         targetSdk = 36
+-        versionCode = 91
++        versionCode = 95
+         versionName = "3.2.0"
+         setProperty("archivesBaseName", "${applicationId}_${versionName}")
+         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+@@ -84,6 +84,7 @@ android {
+         // Store available locales in BuildConfig for runtime access
+         // This is scanned at build time from values-XX directories
+         buildConfigField("String", "AVAILABLE_LOCALES", "\"${availableLocales.joinToString(",")}\"")
++        buildConfigField("Boolean", "ENABLE_DEDICATED_TESTS", "false")
+ 
+         externalNativeBuild {
+             cmake {
+@@ -143,10 +144,14 @@ android {
+         getByName("debug") {
+             // Keep experimental builds isolated from the Play/GitHub-signed app so an
              // on-device handshake test cannot overwrite a user's working configuration.
++            // The dedicated receiver build is not runtime-debuggable so ART can honor
++            // an explicit speed compilation request on the physical device.
++            isDebuggable = false
              applicationIdSuffix = ".hfpslc"
              versionNameSuffix = "-hfp-slc"
 -            resValue("string", "app_name", "Open Headunit Receiver")
 -            resValue("string", "title", "Open Headunit Receiver")
++            buildConfigField("Boolean", "ENABLE_DEDICATED_TESTS", "true")
 +            resValue("string", "app_name", "Open Headunit TPMS")
 +            resValue("string", "title", "Open Headunit TPMS")
          }
      }
  
 diff --git a/app/src/main/AndroidManifest.xml b/app/src/main/AndroidManifest.xml
-index 3c1ec8bc873051fe150f988dd7975bba8c660758..d938ca9539fb91b1c9eff6126200815ddeddde52 100644
+index 3c1ec8bc873051fe150f988dd7975bba8c660758..a31bf347b1e714330ddb5f508f19055f49381cba 100644
 --- a/app/src/main/AndroidManifest.xml
 +++ b/app/src/main/AndroidManifest.xml
-@@ -295,6 +295,15 @@
+@@ -8,6 +8,10 @@
+ 
+     <queries>
+         <package android:name="com.google.android.projection.gearhead" />
++        <intent>
++            <action android:name="android.intent.action.MAIN" />
++            <category android:name="android.intent.category.LAUNCHER" />
++        </intent>
+     </queries>
+ 
+     <uses-feature
+@@ -108,6 +112,13 @@
+         </activity>
+ 
+ 
++        <activity
++            android:name=".main.DeviceAppsActivity"
++            android:configChanges="keyboardHidden|orientation|screenSize|uiMode"
++            android:exported="false"
++            android:launchMode="singleTop"
++            android:theme="@style/AppTheme" />
++
+         <activity
+             android:name=".main.MainActivity"
+             android:configChanges="keyboardHidden|uiMode"
+@@ -123,6 +134,15 @@
+                 <category android:name="android.intent.category.DEFAULT" />
+             </intent-filter>
+ 
++            <!-- Dedicated receiver launcher role. Kept separate from the normal app-launcher
++                 filter so Android can select this activity as HOME without hiding its app icon. -->
++            <intent-filter>
++                <action android:name="android.intent.action.MAIN" />
++
++                <category android:name="android.intent.category.HOME" />
++                <category android:name="android.intent.category.DEFAULT" />
++            </intent-filter>
++
+             <!-- Navigation Role Registration (allows selecting as default nav app) -->
+             <intent-filter>
+                 <action android:name="android.intent.action.MAIN" />
+@@ -295,6 +315,15 @@
              </intent-filter>
          </receiver>
  
@@ -54,7 +118,7 @@ index ad4cd7227950ff9ee12a4ca6435baf22bd4e51a9..1ce11dd9bdfcb9a0cb867650473b03f9
      val suExecutor = SUExecutor()
  
 diff --git a/app/src/main/java/com/andrerinas/openheadunit/aap/AapProjectionActivity.kt b/app/src/main/java/com/andrerinas/openheadunit/aap/AapProjectionActivity.kt
-index 0639a21eb74932602b65d3ae6272165e537a07e7..783b8b6f1e8b0a0ebfd9df4f6e1090dd26949b99 100644
+index 0639a21eb74932602b65d3ae6272165e537a07e7..194cbb0c0951ac75fdef40ad5264d5a034cf6279 100644
 --- a/app/src/main/java/com/andrerinas/openheadunit/aap/AapProjectionActivity.kt
 +++ b/app/src/main/java/com/andrerinas/openheadunit/aap/AapProjectionActivity.kt
 @@ -24,6 +24,7 @@ import androidx.lifecycle.Lifecycle
@@ -288,7 +352,7 @@ index 0639a21eb74932602b65d3ae6272165e537a07e7..783b8b6f1e8b0a0ebfd9df4f6e1090dd
 +
 +    private fun maybeShowSimulatedTpmsAlert(intent: Intent?) {
 +        if (
-+            BuildConfig.DEBUG &&
++            BuildConfig.ENABLE_DEDICATED_TESTS &&
 +            intent?.getBooleanExtra(EXTRA_SIMULATE_TPMS_ALERT, false) == true
 +        ) {
 +            showTpmsAlert(TpmsAlert.simulatedCriticalLowPressure())
@@ -1055,11 +1119,249 @@ index b938d8bd0505c249de44eed830c8cfe70b78adb6..e1a184c689d4efbf271080967eb54943
              if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
                  val alias = device.alias
                  if (!alias.isNullOrEmpty() && alias != hardwareName) {
+diff --git a/app/src/main/java/com/andrerinas/openheadunit/main/DeviceAppsActivity.kt b/app/src/main/java/com/andrerinas/openheadunit/main/DeviceAppsActivity.kt
+new file mode 100644
+index 0000000000000000000000000000000000000000..3fe99a4f714641ab270984f6786525bdc24bba1c
+--- /dev/null
++++ b/app/src/main/java/com/andrerinas/openheadunit/main/DeviceAppsActivity.kt
+@@ -0,0 +1,217 @@
++package com.andrerinas.openheadunit.main
++
++import android.content.ActivityNotFoundException
++import android.content.ComponentName
++import android.content.Intent
++import android.content.pm.PackageManager
++import android.content.res.Configuration
++import android.graphics.drawable.Drawable
++import android.os.Build
++import android.os.Bundle
++import android.os.SystemClock
++import android.provider.Settings as AndroidSettings
++import android.view.LayoutInflater
++import android.view.View
++import android.view.ViewGroup
++import android.widget.ImageView
++import android.widget.TextView
++import android.widget.Toast
++import androidx.recyclerview.widget.GridLayoutManager
++import androidx.recyclerview.widget.RecyclerView
++import com.andrerinas.openheadunit.R
++import com.andrerinas.openheadunit.app.BaseActivity
++import com.andrerinas.openheadunit.utils.Settings
++import com.andrerinas.openheadunit.utils.SystemUI
++import com.google.android.material.button.MaterialButton
++import com.google.android.material.card.MaterialCardView
++import java.text.Collator
++
++class DeviceAppsActivity : BaseActivity() {
++
++    private lateinit var adapter: DeviceAppsAdapter
++    private lateinit var recycler: RecyclerView
++    private lateinit var empty: TextView
++    private var lastLaunchAtMs = 0L
++
++    override fun onCreate(savedInstanceState: Bundle?) {
++        super.onCreate(savedInstanceState)
++        requestedOrientation = Settings(this).screenOrientation.androidOrientation
++        setContentView(R.layout.activity_device_apps)
++
++        val root = findViewById<View>(R.id.device_apps_root)
++        SystemUI.apply(window, root, Settings(this).fullscreenMode)
++
++        findViewById<MaterialButton>(R.id.device_apps_back).setOnClickListener { finish() }
++
++        recycler = findViewById(R.id.device_apps_list)
++        empty = findViewById(R.id.device_apps_empty)
++        adapter = DeviceAppsAdapter(::openApp)
++        recycler.layoutManager = GridLayoutManager(
++            this,
++            if (resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE) 2 else 1,
++        )
++        recycler.adapter = adapter
++    }
++
++    override fun onResume() {
++        super.onResume()
++        refreshApps()
++    }
++
++    private fun refreshApps() {
++        val entries = loadLaunchableApps()
++        adapter.submitEntries(entries)
++        recycler.visibility = if (entries.isEmpty()) View.GONE else View.VISIBLE
++        empty.visibility = if (entries.isEmpty()) View.VISIBLE else View.GONE
++    }
++
++    private fun loadLaunchableApps(): List<DeviceAppEntry> {
++        val launcherIntent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
++        val resolved = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
++            packageManager.queryIntentActivities(
++                launcherIntent,
++                PackageManager.ResolveInfoFlags.of(0L),
++            )
++        } else {
++            @Suppress("DEPRECATION")
++            packageManager.queryIntentActivities(launcherIntent, 0)
++        }
++        val locale = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
++            resources.configuration.locales[0]
++        } else {
++            @Suppress("DEPRECATION")
++            resources.configuration.locale
++        }
++        val collator = Collator.getInstance(locale)
++
++        val launchableApps = resolved
++            .asSequence()
++            .filter { it.activityInfo.exported }
++            .filterNot { it.activityInfo.packageName == packageName }
++            .filterNot { it.activityInfo.packageName in EXCLUDED_PACKAGES }
++            .map { info ->
++                val component = ComponentName(info.activityInfo.packageName, info.activityInfo.name)
++                DeviceAppEntry(
++                    label = info.loadLabel(packageManager).toString(),
++                    component = component,
++                    icon = info.loadIcon(packageManager),
++                    launchIntent = Intent.makeMainActivity(component),
++                )
++            }
++            .sortedWith { first, second ->
++                val labelOrder = collator.compare(first.label, second.label)
++                if (labelOrder != 0) labelOrder else {
++                    first.component.flattenToString().compareTo(second.component.flattenToString())
++                }
++            }
++            .distinctBy { it.component.packageName }
++            .toList()
++
++        return listOf(loadSystemSettingsEntry()) + launchableApps
++    }
++
++    private fun loadSystemSettingsEntry(): DeviceAppEntry {
++        val settingsIntent = Intent(AndroidSettings.ACTION_SETTINGS)
++        val resolved = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
++            packageManager.resolveActivity(
++                settingsIntent,
++                PackageManager.ResolveInfoFlags.of(PackageManager.MATCH_DEFAULT_ONLY.toLong()),
++            )
++        } else {
++            @Suppress("DEPRECATION")
++            packageManager.resolveActivity(settingsIntent, PackageManager.MATCH_DEFAULT_ONLY)
++        }
++        val activityInfo = resolved?.activityInfo
++        val component = if (activityInfo != null) {
++            ComponentName(activityInfo.packageName, activityInfo.name)
++        } else {
++            ComponentName(ANDROID_SETTINGS_PACKAGE, ANDROID_SETTINGS_FALLBACK_ACTIVITY)
++        }
++        return DeviceAppEntry(
++            label = getString(R.string.system_settings),
++            component = component,
++            icon = activityInfo?.loadIcon(packageManager) ?: packageManager.defaultActivityIcon,
++            launchIntent = settingsIntent,
++        )
++    }
++
++    private fun openApp(entry: DeviceAppEntry) {
++        val now = SystemClock.elapsedRealtime()
++        if (now - lastLaunchAtMs < LAUNCH_DEBOUNCE_MS) return
++        lastLaunchAtMs = now
++        try {
++            startActivity(Intent(entry.launchIntent))
++        } catch (_: ActivityNotFoundException) {
++            showOpenFailure(entry.label)
++        } catch (_: SecurityException) {
++            showOpenFailure(entry.label)
++        }
++    }
++
++    private fun showOpenFailure(label: String) {
++        Toast.makeText(
++            this,
++            getString(R.string.device_app_open_failed, label),
++            Toast.LENGTH_LONG,
++        ).show()
++        refreshApps()
++    }
++
++    companion object {
++        private const val LAUNCH_DEBOUNCE_MS = 600L
++        private const val ANDROID_SETTINGS_PACKAGE = "com.android.settings"
++        private const val ANDROID_SETTINGS_FALLBACK_ACTIVITY = "com.android.settings.Settings"
++        private val EXCLUDED_PACKAGES = setOf(
++            "com.sec.android.app.launcher",
++            "com.android.settings",
++            "com.andrerinas.headunitrevived",
++        )
++    }
++}
++
++private data class DeviceAppEntry(
++    val label: String,
++    val component: ComponentName,
++    val icon: Drawable,
++    val launchIntent: Intent,
++)
++
++private class DeviceAppsAdapter(
++    private val onOpen: (DeviceAppEntry) -> Unit,
++) : RecyclerView.Adapter<DeviceAppsAdapter.AppViewHolder>() {
++
++    private var entries: List<DeviceAppEntry> = emptyList()
++
++    fun submitEntries(newEntries: List<DeviceAppEntry>) {
++        entries = newEntries
++        notifyDataSetChanged()
++    }
++
++    override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): AppViewHolder {
++        val view = LayoutInflater.from(parent.context)
++            .inflate(R.layout.item_device_app, parent, false)
++        return AppViewHolder(view)
++    }
++
++    override fun onBindViewHolder(holder: AppViewHolder, position: Int) {
++        holder.bind(entries[position])
++    }
++
++    override fun getItemCount(): Int = entries.size
++
++    inner class AppViewHolder(itemView: View) : RecyclerView.ViewHolder(itemView) {
++        private val card = itemView.findViewById<MaterialCardView>(R.id.device_app_card)
++        private val icon = itemView.findViewById<ImageView>(R.id.device_app_icon)
++        private val label = itemView.findViewById<TextView>(R.id.device_app_label)
++
++        fun bind(entry: DeviceAppEntry) {
++            icon.setImageDrawable(entry.icon)
++            label.text = entry.label
++            card.contentDescription = itemView.context.getString(
++                R.string.device_app_open_accessibility,
++                entry.label,
++            )
++            card.setOnClickListener { onOpen(entry) }
++        }
++    }
++}
 diff --git a/app/src/main/java/com/andrerinas/openheadunit/main/HomeFragment.kt b/app/src/main/java/com/andrerinas/openheadunit/main/HomeFragment.kt
-index 552df636133c928fbfdbaef731daab3500973026..f0bb00a356ab03556fcbcd13a67cd33140d77705 100644
+index 552df636133c928fbfdbaef731daab3500973026..c9d6e794213df2daf9aa7c0b39a2b4437062cefd 100644
 --- a/app/src/main/java/com/andrerinas/openheadunit/main/HomeFragment.kt
 +++ b/app/src/main/java/com/andrerinas/openheadunit/main/HomeFragment.kt
-@@ -45,6 +45,11 @@ import com.andrerinas.openheadunit.utils.BluetoothHelper
+@@ -1,5 +1,6 @@
+ package com.andrerinas.openheadunit.main
+ 
++import android.content.ActivityNotFoundException
+ import android.content.Context
+ import android.content.Intent
+ import android.hardware.usb.UsbManager
+@@ -20,6 +21,7 @@ import android.net.ConnectivityManager
+ import android.os.Build
+ import androidx.fragment.app.Fragment
+ import androidx.core.content.ContextCompat
++import androidx.core.view.ViewCompat
+ import androidx.lifecycle.Lifecycle
+ import androidx.lifecycle.lifecycleScope
+ import androidx.navigation.fragment.findNavController
+@@ -45,6 +47,11 @@ import com.andrerinas.openheadunit.utils.BluetoothHelper
  import com.andrerinas.openheadunit.connection.UsbReceiver
  import com.andrerinas.openheadunit.connection.UsbAccessoryMode
  import kotlinx.coroutines.withContext
@@ -1071,7 +1373,7 @@ index 552df636133c928fbfdbaef731daab3500973026..f0bb00a356ab03556fcbcd13a67cd331
  
  class HomeFragment : Fragment() {
  
-@@ -69,6 +74,16 @@ class HomeFragment : Fragment() {
+@@ -69,15 +76,30 @@ class HomeFragment : Fragment() {
          }
      }
  
@@ -1088,9 +1390,12 @@ index 552df636133c928fbfdbaef731daab3500973026..f0bb00a356ab03556fcbcd13a67cd331
      private lateinit var self_mode_button: Button
      private lateinit var usb: Button
      private lateinit var settings: Button
-@@ -78,6 +93,12 @@ class HomeFragment : Fragment() {
++    private lateinit var deviceAppsButton: Button
+     private lateinit var wifi: Button
+-    private lateinit var wifi_text_view: TextView
+     private lateinit var exitButton: Button
      private lateinit var self_mode_text: TextView
-     private lateinit var connectionBadge: TextView
+-    private lateinit var connectionBadge: TextView
      private lateinit var audioRouteText: TextView
 +    private lateinit var tpmsPanel: View
 +    private lateinit var tpmsStatusText: TextView
@@ -1101,9 +1406,20 @@ index 552df636133c928fbfdbaef731daab3500973026..f0bb00a356ab03556fcbcd13a67cd331
      private var hasAttemptedAutoConnect = false
      private var hasAttemptedSingleUsbAutoConnect = false
      private var activeDialog: androidx.appcompat.app.AlertDialog? = null
-@@ -102,7 +123,12 @@ class HomeFragment : Fragment() {
+@@ -96,13 +118,21 @@ class HomeFragment : Fragment() {
+         self_mode_button = view.findViewById(R.id.self_mode_button)
+         usb = view.findViewById(R.id.usb_button)
+         settings = view.findViewById(R.id.settings_button)
++        deviceAppsButton = view.findViewById(R.id.device_apps_button)
+         wifi = view.findViewById(R.id.wifi_button)
+-        wifi_text_view = view.findViewById(R.id.wifi_text)
++        ViewCompat.setAccessibilityLiveRegion(
++            wifi,
++            ViewCompat.ACCESSIBILITY_LIVE_REGION_POLITE,
++        )
+         exitButton = view.findViewById(R.id.exit_button)
          self_mode_text = view.findViewById(R.id.self_mode_text)
-         connectionBadge = view.findViewById(R.id.connection_badge)
+-        connectionBadge = view.findViewById(R.id.connection_badge)
          audioRouteText = view.findViewById(R.id.audio_route_text)
 -
 +        tpmsPanel = view.findViewById(R.id.tpms_panel)
@@ -1115,7 +1431,7 @@ index 552df636133c928fbfdbaef731daab3500973026..f0bb00a356ab03556fcbcd13a67cd331
          // Portrait layout: cap grid width so square buttons never overflow
          // into the WiFi-pill or Exit-button areas on compact/square devices.
          if (resources.configuration.orientation == Configuration.ORIENTATION_PORTRAIT) {
-@@ -124,6 +150,23 @@ class HomeFragment : Fragment() {
+@@ -124,6 +154,23 @@ class HomeFragment : Fragment() {
              }
          }
  
@@ -1139,10 +1455,14 @@ index 552df636133c928fbfdbaef731daab3500973026..f0bb00a356ab03556fcbcd13a67cd331
          val appSettings = App.provide(requireContext()).settings
  
          if (appSettings.autoStartOnScreenOn || appSettings.autoStartOnBoot) {
-@@ -457,6 +500,15 @@ class HomeFragment : Fragment() {
+@@ -457,6 +504,19 @@ class HomeFragment : Fragment() {
              startActivity(intent)
          }
  
++        deviceAppsButton.setOnClickListener {
++            startDeviceSurface(Intent(requireContext(), DeviceAppsActivity::class.java))
++        }
++
 +        tpmsPanel.setOnClickListener {
 +            val tpmsRepository = App.provide(requireContext()).tpmsRepository
 +            if (tpmsRepository.hasScanPermission()) {
@@ -1155,7 +1475,65 @@ index 552df636133c928fbfdbaef731daab3500973026..f0bb00a356ab03556fcbcd13a67cd331
          wifi.setOnClickListener {
              if (commManager.isConnected) {
                  showProjection()
-@@ -663,7 +715,7 @@ class HomeFragment : Fragment() {
+@@ -617,7 +677,7 @@ class HomeFragment : Fragment() {
+     }
+ 
+     private fun renderDedicatedHomeState(scanning: Boolean) {
+-        if (!this::wifi.isInitialized || !this::connectionBadge.isInitialized) return
++        if (!this::wifi.isInitialized) return
+ 
+         val state = resolveDedicatedHomeConnectionState(
+             commManager.connectionState.value,
+@@ -627,35 +687,31 @@ class HomeFragment : Fragment() {
+         when (state) {
+             DedicatedHomeConnectionState.READY -> {
+                 wifi.text = getString(R.string.dedicated_home_connect)
+-                wifi.contentDescription = getString(R.string.dedicated_home_connect)
+-                wifi_text_view.text = getString(R.string.dedicated_home_ready_detail)
+-                connectionBadge.text = getString(R.string.dedicated_home_ready_badge)
+-                connectionBadge.setTextColor(
+-                    ContextCompat.getColor(requireContext(), R.color.tracer_text_secondary)
+-                )
++                wifi.contentDescription = getString(R.string.dedicated_home_connect_accessibility)
++                setConnectionStateDescription(null)
+                 wifi.isEnabled = true
+                 wifi.alpha = 1.0f
+             }
+ 
+             DedicatedHomeConnectionState.CONNECTING -> {
+                 wifi.text = getString(R.string.dedicated_home_connecting)
+-                wifi.contentDescription = getString(R.string.dedicated_home_connecting)
+-                wifi_text_view.text = getString(R.string.dedicated_home_connecting_detail)
+-                connectionBadge.text = getString(R.string.dedicated_home_connecting_badge)
+-                connectionBadge.setTextColor(
+-                    ContextCompat.getColor(requireContext(), R.color.tracer_connecting)
++                wifi.contentDescription = getString(
++                    R.string.dedicated_home_connecting_accessibility
++                )
++                setConnectionStateDescription(
++                    getString(R.string.dedicated_home_connecting_state)
+                 )
+                 wifi.isEnabled = false
+-                wifi.alpha = 0.72f
++                wifi.alpha = 0.84f
+             }
+ 
+             DedicatedHomeConnectionState.CONNECTED -> {
+                 wifi.text = getString(R.string.dedicated_home_return)
+-                wifi.contentDescription = getString(R.string.dedicated_home_return)
+-                wifi_text_view.text = getString(R.string.dedicated_home_connected_detail)
+-                connectionBadge.text = getString(R.string.dedicated_home_connected_badge)
+-                connectionBadge.setTextColor(
+-                    ContextCompat.getColor(requireContext(), R.color.tracer_connected)
++                wifi.contentDescription = getString(
++                    R.string.dedicated_home_return_accessibility
++                )
++                setConnectionStateDescription(
++                    getString(R.string.dedicated_home_connected_state)
+                 )
+                 wifi.isEnabled = true
+                 wifi.alpha = 1.0f
+@@ -663,12 +719,18 @@ class HomeFragment : Fragment() {
          }
  
          audioRouteText.text = if (App.provide(requireContext()).settings.enableAudioSink) {
@@ -1164,7 +1542,18 @@ index 552df636133c928fbfdbaef731daab3500973026..f0bb00a356ab03556fcbcd13a67cd331
          } else {
              getString(R.string.dedicated_home_audio_phone)
          }
-@@ -703,16 +755,71 @@ class HomeFragment : Fragment() {
+     }
+ 
++    private fun setConnectionStateDescription(description: String?) {
++        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
++            wifi.stateDescription = description
++        }
++    }
++
+     private fun showProjection() {
+         val aapIntent = Intent(requireContext(), AapProjectionActivity::class.java).apply {
+             putExtra(AapProjectionActivity.EXTRA_FOCUS, true)
+@@ -703,16 +765,71 @@ class HomeFragment : Fragment() {
          super.onResume()
          AppLog.i("HomeFragment: onResume. isConnected=${commManager.isConnected}")
          updateProjectionButtonText()
@@ -1236,7 +1625,7 @@ index 552df636133c928fbfdbaef731daab3500973026..f0bb00a356ab03556fcbcd13a67cd331
      private fun showNativeAaDeviceSelector() {
          val adapter = BluetoothHelper.getBluetoothAdapter(requireContext())
  
-@@ -723,11 +830,17 @@ class HomeFragment : Fragment() {
+@@ -723,11 +840,17 @@ class HomeFragment : Fragment() {
  
          val bondedDevices = adapter.bondedDevices?.toList() ?: emptyList()
          if (bondedDevices.isEmpty()) {
@@ -1256,7 +1645,7 @@ index 552df636133c928fbfdbaef731daab3500973026..f0bb00a356ab03556fcbcd13a67cd331
  
  
          activeDialog = MaterialAlertDialogBuilder(requireContext(), R.style.DarkAlertDialog)
-@@ -745,7 +858,14 @@ class HomeFragment : Fragment() {
+@@ -745,7 +868,14 @@ class HomeFragment : Fragment() {
                      putExtra(AapService.EXTRA_MAC, device.address)
                  }
                  ContextCompat.startForegroundService(requireContext(), intent)
@@ -1272,6 +1661,40 @@ index 552df636133c928fbfdbaef731daab3500973026..f0bb00a356ab03556fcbcd13a67cd331
              }
              .setNegativeButton(R.string.cancel, null)
              .show()
+@@ -861,7 +991,7 @@ class HomeFragment : Fragment() {
+         val nightModeFlags = resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK
+         val isLightMode = nightModeFlags != Configuration.UI_MODE_NIGHT_YES
+ 
+-        val labelViews = listOf(self_mode_text, wifi_text_view,
++        val labelViews = listOf(self_mode_text,
+             view?.findViewById<TextView>(R.id.usb_text),
+             view?.findViewById<TextView>(R.id.settings_text))
+ 
+@@ -882,6 +1012,24 @@ class HomeFragment : Fragment() {
+         exitButton.setTextColor(Color.WHITE)
+     }
+ 
++    private fun startDeviceSurface(intent: Intent) {
++        try {
++            startActivity(intent)
++        } catch (_: ActivityNotFoundException) {
++            showDeviceSurfaceUnavailable()
++        } catch (_: SecurityException) {
++            showDeviceSurfaceUnavailable()
++        }
++    }
++
++    private fun showDeviceSurfaceUnavailable() {
++        Toast.makeText(
++            requireContext(),
++            R.string.device_surface_unavailable,
++            Toast.LENGTH_LONG,
++        ).show()
++    }
++
+     companion object {
+         private var hasAutoStarted = false
+         var forceSelfModeLaunch = false
 diff --git a/app/src/main/java/com/andrerinas/openheadunit/main/KeymapFragment.kt b/app/src/main/java/com/andrerinas/openheadunit/main/KeymapFragment.kt
 index 8f6312455365b426b68ffe4f27eefe9f2f5c208f..c4148ea6c4cd24958999fc22e90be91257467ae4 100644
 --- a/app/src/main/java/com/andrerinas/openheadunit/main/KeymapFragment.kt
@@ -1425,10 +1848,20 @@ index caf0b42d344fa2000b983e0bc290e19ce1230114..0503b8e14f3b640bb294c38e0be0e71e
          /**
           * Hard upper bound for how long the auto-connect overlay may stay visible
 diff --git a/app/src/main/java/com/andrerinas/openheadunit/main/QuickSettingsFragment.kt b/app/src/main/java/com/andrerinas/openheadunit/main/QuickSettingsFragment.kt
-index 511d86442ae5aebb69640e5fad90665c44952797..13393ecfd65f1646811bb249be177d0928684b2b 100644
+index 511d86442ae5aebb69640e5fad90665c44952797..a2fc5ae832c6ba54fd0b610ab2e1adfee1c08528 100644
 --- a/app/src/main/java/com/andrerinas/openheadunit/main/QuickSettingsFragment.kt
 +++ b/app/src/main/java/com/andrerinas/openheadunit/main/QuickSettingsFragment.kt
-@@ -10,6 +10,7 @@ import androidx.localbroadcastmanager.content.LocalBroadcastManager
+@@ -1,7 +1,9 @@
+ package com.andrerinas.openheadunit.main
+ 
++import android.content.ActivityNotFoundException
+ import android.content.Intent
+ import android.os.Bundle
++import android.provider.Settings as AndroidSettings
+ import android.view.LayoutInflater
+ import android.view.View
+ import android.view.ViewGroup
+@@ -10,6 +12,7 @@ import androidx.localbroadcastmanager.content.LocalBroadcastManager
  import androidx.recyclerview.widget.LinearLayoutManager
  import androidx.recyclerview.widget.RecyclerView
  import com.andrerinas.openheadunit.App
@@ -1436,7 +1869,7 @@ index 511d86442ae5aebb69640e5fad90665c44952797..13393ecfd65f1646811bb249be177d09
  import com.andrerinas.openheadunit.R
  import com.andrerinas.openheadunit.aap.AapService
  import com.andrerinas.openheadunit.main.settings.SettingItem
-@@ -29,6 +30,7 @@ class QuickSettingsFragment : DialogFragment() {
+@@ -29,6 +32,7 @@ class QuickSettingsFragment : DialogFragment() {
          const val EXTRA_NEEDS_AUDIO_RESTART = "needs_audio_restart"
          const val EXTRA_SENSOR_REFRESH = "sensor_refresh"
          const val EXTRA_APPLY_FULLSCREEN = "apply_fullscreen"
@@ -1444,11 +1877,11 @@ index 511d86442ae5aebb69640e5fad90665c44952797..13393ecfd65f1646811bb249be177d09
      }
  
      private lateinit var settings: Settings
-@@ -168,6 +170,22 @@ class QuickSettingsFragment : DialogFragment() {
+@@ -168,6 +172,22 @@ class QuickSettingsFragment : DialogFragment() {
              }
          ))
  
-+        if (BuildConfig.DEBUG) {
++        if (BuildConfig.ENABLE_DEDICATED_TESTS) {
 +            items.add(SettingItem.CategoryHeader("tpmsSafety", R.string.tpms_quick_category))
 +            items.add(SettingItem.InfoBanner(
 +                stableId = "tpmsTestExplanation",
@@ -1467,11 +1900,64 @@ index 511d86442ae5aebb69640e5fad90665c44952797..13393ecfd65f1646811bb249be177d09
          // --- System & Safety ---
          items.add(SettingItem.CategoryHeader("system", R.string.category_automation))
  
-@@ -212,12 +230,19 @@ class QuickSettingsFragment : DialogFragment() {
+@@ -203,6 +223,25 @@ class QuickSettingsFragment : DialogFragment() {
+             onClick = { triggerLogExport() }
+         ))
+ 
++        // --- Device access ---
++        // The receiver can be Android's default HOME activity, so maintenance routes must stay
++        // discoverable without requiring ADB or changing the default launcher first.
++        items.add(SettingItem.CategoryHeader("deviceAccess", R.string.device_access_category))
++
++        items.add(SettingItem.SettingEntry(
++            stableId = "deviceApps",
++            nameResId = R.string.device_apps,
++            value = getString(R.string.device_apps_description),
++            onClick = { openDeviceApps() }
++        ))
++
++        items.add(SettingItem.SettingEntry(
++            stableId = "systemSettings",
++            nameResId = R.string.system_settings,
++            value = getString(R.string.system_settings_description),
++            onClick = { openSystemSettings() }
++        ))
++
+         items.add(SettingItem.ActionButton(
+             stableId = "dismiss",
+             textResId = R.string.close,
+@@ -212,12 +251,46 @@ class QuickSettingsFragment : DialogFragment() {
          settingsAdapter.submitList(items)
      }
  
 -    private fun notifyChange(needsViewRecreate: Boolean = false, needsAudioRestart: Boolean = false, sensorRefresh: Boolean = false, applyFullscreen: Boolean = false) {
++    private fun openDeviceApps() {
++        startDeviceSurface(Intent(requireContext(), DeviceAppsActivity::class.java))
++    }
++
++    private fun openSystemSettings() {
++        startDeviceSurface(Intent(AndroidSettings.ACTION_SETTINGS))
++    }
++
++    private fun startDeviceSurface(intent: Intent) {
++        try {
++            startActivity(intent)
++            dismiss()
++        } catch (_: ActivityNotFoundException) {
++            showDeviceSurfaceUnavailable()
++        } catch (_: SecurityException) {
++            showDeviceSurfaceUnavailable()
++        }
++    }
++
++    private fun showDeviceSurfaceUnavailable() {
++        Toast.makeText(
++            requireContext(),
++            R.string.device_surface_unavailable,
++            Toast.LENGTH_LONG,
++        ).show()
++    }
++
 +    private fun notifyChange(
 +        needsViewRecreate: Boolean = false,
 +        needsAudioRestart: Boolean = false,
@@ -1488,13 +1974,83 @@ index 511d86442ae5aebb69640e5fad90665c44952797..13393ecfd65f1646811bb249be177d09
          }
          LocalBroadcastManager.getInstance(requireContext()).sendBroadcast(intent)
      }
-@@ -411,4 +436,4 @@ class QuickSettingsFragment : DialogFragment() {
+@@ -411,4 +484,4 @@ class QuickSettingsFragment : DialogFragment() {
              Toast.makeText(context, getString(R.string.failed_export_logs), Toast.LENGTH_SHORT).show()
          }
      }
 -}
 \ No newline at end of file
 +}
+diff --git a/app/src/main/java/com/andrerinas/openheadunit/main/SettingsFragment.kt b/app/src/main/java/com/andrerinas/openheadunit/main/SettingsFragment.kt
+index 4da1d4aaa9792a03fffbcbf006b9dd90b8b46228..1c9ad68919fdf0cca836dad67caace9ad025b395 100644
+--- a/app/src/main/java/com/andrerinas/openheadunit/main/SettingsFragment.kt
++++ b/app/src/main/java/com/andrerinas/openheadunit/main/SettingsFragment.kt
+@@ -69,6 +69,8 @@ class SettingsFragment : Fragment() {
+     // Curated everyday options shown in the Basic tab. Advanced shows everything.
+     // Wireless items here only appear in Basic when the user connects wirelessly (see filterSettings).
+     private val basicSettingIds = setOf(
++        // Device maintenance (kept visible when this app is Android's default HOME activity)
++        "deviceApps", "systemSettings",
+         // General
+         "autoOptimize", "connectionMode", "appLanguage", "uiScale",
+         // Wireless (shown in Basic only when WiFi is among the selected connection modes)
+@@ -623,6 +625,23 @@ class SettingsFragment : Fragment() {
+         val scrollState = settingsRecyclerView.layoutManager?.onSaveInstanceState()
+         val items = mutableListOf<SettingItem>()
+ 
++        // --- Device access ---
++        items.add(SettingItem.CategoryHeader("deviceAccess", R.string.device_access_category))
++
++        items.add(SettingItem.SettingEntry(
++            stableId = "deviceApps",
++            nameResId = R.string.device_apps,
++            value = getString(R.string.device_apps_description),
++            onClick = { openDeviceApps() }
++        ))
++
++        items.add(SettingItem.SettingEntry(
++            stableId = "systemSettings",
++            nameResId = R.string.system_settings,
++            value = getString(R.string.system_settings_description),
++            onClick = { openSystemSettings() }
++        ))
++
+         // --- General Settings ---
+         items.add(SettingItem.CategoryHeader("general", R.string.category_general))
+ 
+@@ -1771,6 +1790,32 @@ class SettingsFragment : Fragment() {
+         renderSettings(scrollState)
+     }
+ 
++    private fun openDeviceApps() {
++        startDeviceSurface(Intent(requireContext(), DeviceAppsActivity::class.java))
++    }
++
++    private fun openSystemSettings() {
++        startDeviceSurface(Intent(SystemSettings.ACTION_SETTINGS))
++    }
++
++    private fun startDeviceSurface(intent: Intent) {
++        try {
++            startActivity(intent)
++        } catch (_: ActivityNotFoundException) {
++            showDeviceSurfaceUnavailable()
++        } catch (_: SecurityException) {
++            showDeviceSurfaceUnavailable()
++        }
++    }
++
++    private fun showDeviceSurfaceUnavailable() {
++        Toast.makeText(
++            requireContext(),
++            R.string.device_surface_unavailable,
++            Toast.LENGTH_LONG,
++        ).show()
++    }
++
+     private fun setupTabsAndSearch(view: View) {
+         settingsTabGroup = view.findViewById(R.id.settingsTabGroup)
+         searchInput = view.findViewById(R.id.settingsSearch)
 diff --git a/app/src/main/java/com/andrerinas/openheadunit/main/TouchLockController.kt b/app/src/main/java/com/andrerinas/openheadunit/main/TouchLockController.kt
 new file mode 100644
 index 0000000000000000000000000000000000000000..6cab443d0e792b5422ea2f5d512fa78f916134b1
@@ -21363,13 +21919,27 @@ index 0000000000000000000000000000000000000000..610962c3fea02e5665f4a02f574d1ad2
 +        android:pathData="M57,59.5 A1.5,1.5 0,1 1,57,62.5 A1.5,1.5 0,1 1,57,59.5" />
 +</vector>
 diff --git a/app/src/main/res/layout-port/fragment_home.xml b/app/src/main/res/layout-port/fragment_home.xml
-index dae81078254392172f5b0d9700f699678eaf0ddf..c72f59c1c318048c37e3cc5fb0d1ffb856806b5d 100644
+index dae81078254392172f5b0d9700f699678eaf0ddf..f83086bbe11a8ad291089bb7fd1faa8d1b1034ac 100644
 --- a/app/src/main/res/layout-port/fragment_home.xml
 +++ b/app/src/main/res/layout-port/fragment_home.xml
-@@ -297,4 +297,37 @@
+@@ -282,17 +282,49 @@
+         android:textColor="@android:color/white"
+         app:cornerRadius="8dp" />
+ 
+-    <!-- HomeFragment binds these dedicated-landscape status views before the
+-         requested orientation has fully settled. Keep hidden counterparts in
+-         the portrait resource so a transitional inflation cannot crash. -->
++    <!-- HomeFragment binds dedicated-landscape views before the requested orientation has fully
++         settled. Keep hidden counterparts in the portrait resource so inflation cannot crash. -->
+     <TextView
+-        android:id="@+id/connection_badge"
++        android:id="@+id/audio_route_text"
+         android:layout_width="1dp"
          android:layout_height="1dp"
          android:visibility="gone" />
  
+-    <TextView
+-        android:id="@+id/audio_route_text"
 +    <LinearLayout
 +        android:id="@+id/tpms_panel"
 +        android:layout_width="1dp"
@@ -21403,7 +21973,91 @@ index dae81078254392172f5b0d9700f699678eaf0ddf..c72f59c1c318048c37e3cc5fb0d1ffb8
 +            android:layout_height="1dp" />
 +    </LinearLayout>
 +
- </androidx.constraintlayout.widget.ConstraintLayout>
++    <com.google.android.material.button.MaterialButton
++        android:id="@+id/device_apps_button"
+         android:layout_width="1dp"
+         android:layout_height="1dp"
+         android:visibility="gone" />
+diff --git a/app/src/main/res/layout/activity_device_apps.xml b/app/src/main/res/layout/activity_device_apps.xml
+new file mode 100644
+index 0000000000000000000000000000000000000000..cb5b51f1ed4ad97db40935f42b87413ac0aaef76
+--- /dev/null
++++ b/app/src/main/res/layout/activity_device_apps.xml
+@@ -0,0 +1,74 @@
++<?xml version="1.0" encoding="utf-8"?>
++<androidx.constraintlayout.widget.ConstraintLayout xmlns:android="http://schemas.android.com/apk/res/android"
++    xmlns:app="http://schemas.android.com/apk/res-auto"
++    android:id="@+id/device_apps_root"
++    android:layout_width="match_parent"
++    android:layout_height="match_parent"
++    android:background="@drawable/bg_instrument_home">
++
++    <androidx.constraintlayout.widget.ConstraintLayout
++        android:id="@+id/device_apps_header"
++        android:layout_width="0dp"
++        android:layout_height="56dp"
++        android:background="#E60E110D"
++        app:layout_constraintEnd_toEndOf="parent"
++        app:layout_constraintStart_toStartOf="parent"
++        app:layout_constraintTop_toTopOf="parent">
++
++        <com.google.android.material.button.MaterialButton
++            android:id="@+id/device_apps_back"
++            style="@style/Widget.Material3.Button.IconButton"
++            android:layout_width="48dp"
++            android:layout_height="48dp"
++            android:layout_marginStart="16dp"
++            android:contentDescription="@string/device_apps_back_accessibility"
++            android:insetTop="0dp"
++            android:insetBottom="0dp"
++            app:backgroundTint="@android:color/transparent"
++            app:icon="@drawable/ic_arrow_back_white"
++            app:iconGravity="textStart"
++            app:iconPadding="0dp"
++            app:iconSize="28dp"
++            app:iconTint="@android:color/white"
++            app:layout_constraintBottom_toBottomOf="parent"
++            app:layout_constraintStart_toStartOf="parent"
++            app:layout_constraintTop_toTopOf="parent" />
++
++        <View
++            android:layout_width="0dp"
++            android:layout_height="1dp"
++            android:background="#3E4736"
++            app:layout_constraintBottom_toBottomOf="parent"
++            app:layout_constraintEnd_toEndOf="parent"
++            app:layout_constraintStart_toStartOf="parent" />
++    </androidx.constraintlayout.widget.ConstraintLayout>
++
++    <androidx.recyclerview.widget.RecyclerView
++        android:id="@+id/device_apps_list"
++        android:layout_width="0dp"
++        android:layout_height="0dp"
++        android:clipToPadding="false"
++        android:paddingStart="18dp"
++        android:paddingTop="8dp"
++        android:paddingEnd="18dp"
++        android:paddingBottom="12dp"
++        android:scrollbars="vertical"
++        app:layout_constraintBottom_toBottomOf="parent"
++        app:layout_constraintEnd_toEndOf="parent"
++        app:layout_constraintStart_toStartOf="parent"
++        app:layout_constraintTop_toBottomOf="@id/device_apps_header" />
++
++    <TextView
++        android:id="@+id/device_apps_empty"
++        android:layout_width="wrap_content"
++        android:layout_height="wrap_content"
++        android:text="@string/device_apps_empty"
++        android:textColor="@color/tracer_text_secondary"
++        android:textSize="18sp"
++        android:visibility="gone"
++        app:layout_constraintBottom_toBottomOf="parent"
++        app:layout_constraintEnd_toEndOf="parent"
++        app:layout_constraintStart_toStartOf="parent"
++        app:layout_constraintTop_toBottomOf="@id/device_apps_header" />
++
++</androidx.constraintlayout.widget.ConstraintLayout>
 diff --git a/app/src/main/res/layout/activity_headunit.xml b/app/src/main/res/layout/activity_headunit.xml
 index 9d6e22126656f185df061a6bb0f5ebbd13c7daf4..7a22a882d050577b2f8c0a133275a1f3c0a1b24f 100644
 --- a/app/src/main/res/layout/activity_headunit.xml
@@ -21581,7 +22235,7 @@ index 4a91a81b94e7fbaf8104674f668b7886c484998f..bdc7a93b828fe08452fee55a861388f2
 \ No newline at end of file
 +</LinearLayout>
 diff --git a/app/src/main/res/layout/fragment_home.xml b/app/src/main/res/layout/fragment_home.xml
-index 88fc47ab893508247a39c04ad780314421adce60..52c7afd7f6dae5e2a24ba47201474d34114d9cdf 100644
+index 88fc47ab893508247a39c04ad780314421adce60..b7e029a37ee4afe3bec368ba66bbedcb8bdee203 100644
 --- a/app/src/main/res/layout/fragment_home.xml
 +++ b/app/src/main/res/layout/fragment_home.xml
 @@ -24,7 +24,8 @@
@@ -21594,7 +22248,26 @@ index 88fc47ab893508247a39c04ad780314421adce60..52c7afd7f6dae5e2a24ba47201474d34
          android:scaleType="fitCenter"
          android:src="@drawable/yamaha_motor_identity"
          app:tint="@color/tracer_accent"
-@@ -144,6 +145,10 @@
+@@ -72,7 +73,7 @@
+         style="@style/Widget.Material3.Button.OutlinedButton"
+         android:layout_width="44dp"
+         android:layout_height="44dp"
+-        android:contentDescription="@string/settings"
++        android:contentDescription="@string/receiver_settings_accessibility"
+         android:insetLeft="0dp"
+         android:insetTop="0dp"
+         android:insetRight="0dp"
+@@ -118,7 +119,8 @@
+         android:layout_marginTop="8dp"
+         android:layout_marginEnd="18dp"
+         android:layout_marginBottom="6dp"
+-        android:contentDescription="@string/tracer_900_gt_image_description"
++        android:contentDescription="@null"
++        android:importantForAccessibility="no"
+         android:scaleType="fitCenter"
+         android:src="@drawable/tracer_900_gt_hero"
+         app:layout_constraintBottom_toTopOf="@id/connection_bar"
+@@ -144,6 +146,10 @@
          android:layout_marginStart="18dp"
          android:layout_marginTop="12dp"
          android:layout_marginBottom="10dp"
@@ -21605,7 +22278,7 @@ index 88fc47ab893508247a39c04ad780314421adce60..52c7afd7f6dae5e2a24ba47201474d34
          android:orientation="vertical"
          app:layout_constraintBottom_toTopOf="@id/connection_bar"
          app:layout_constraintEnd_toEndOf="parent"
-@@ -172,6 +177,7 @@
+@@ -172,6 +178,7 @@
                  android:layout_weight="1" />
  
              <View
@@ -21613,7 +22286,7 @@ index 88fc47ab893508247a39c04ad780314421adce60..52c7afd7f6dae5e2a24ba47201474d34
                  android:layout_width="6dp"
                  android:layout_height="6dp"
                  android:background="@drawable/bg_instrument_status_dot" />
-@@ -274,6 +280,7 @@
+@@ -274,6 +281,7 @@
                  app:layout_constraintTop_toTopOf="@id/front_tire_icon" />
  
              <TextView
@@ -21621,7 +22294,7 @@ index 88fc47ab893508247a39c04ad780314421adce60..52c7afd7f6dae5e2a24ba47201474d34
                  android:layout_width="wrap_content"
                  android:layout_height="wrap_content"
                  android:layout_marginEnd="12dp"
-@@ -370,6 +377,7 @@
+@@ -370,6 +378,7 @@
                  app:layout_constraintTop_toTopOf="@id/rear_tire_icon" />
  
              <TextView
@@ -21629,7 +22302,100 @@ index 88fc47ab893508247a39c04ad780314421adce60..52c7afd7f6dae5e2a24ba47201474d34
                  android:layout_width="wrap_content"
                  android:layout_height="wrap_content"
                  android:layout_marginEnd="12dp"
-@@ -474,7 +482,7 @@
+@@ -419,62 +428,50 @@
+         app:layout_constraintEnd_toEndOf="parent"
+         app:layout_constraintStart_toStartOf="parent">
+ 
+-        <View
+-            android:id="@+id/connection_dot"
+-            android:layout_width="7dp"
+-            android:layout_height="7dp"
+-            android:layout_marginStart="17dp"
+-            android:background="@drawable/bg_instrument_status_dot"
++        <LinearLayout
++            android:id="@+id/maintenance_actions"
++            android:layout_width="108dp"
++            android:layout_height="48dp"
++            android:layout_marginStart="9dp"
++            android:gravity="center_vertical"
++            android:orientation="horizontal"
+             app:layout_constraintBottom_toBottomOf="parent"
+             app:layout_constraintStart_toStartOf="parent"
+-            app:layout_constraintTop_toTopOf="parent" />
+-
+-        <TextView
+-            android:id="@+id/projection_title"
+-            android:layout_width="wrap_content"
+-            android:layout_height="wrap_content"
+-            android:layout_marginStart="14dp"
+-            android:fontFamily="sans-serif-medium"
+-            android:text="@string/dedicated_home_projection_title"
+-            android:textColor="@android:color/white"
+-            android:textSize="14sp"
+-            android:textStyle="bold"
+-            app:layout_constraintStart_toEndOf="@id/connection_dot"
+-            app:layout_constraintTop_toTopOf="@id/platform_actions" />
+-
+-        <TextView
+-            android:id="@+id/connection_badge"
+-            android:layout_width="wrap_content"
+-            android:layout_height="wrap_content"
+-            android:layout_marginStart="11dp"
+-            android:fontFamily="sans-serif-medium"
+-            android:letterSpacing="0.1"
+-            android:text="@string/dedicated_home_ready_badge"
+-            android:textColor="@color/tracer_text_secondary"
+-            android:textSize="7sp"
+-            android:textStyle="bold"
+-            app:layout_constraintBaseline_toBaselineOf="@id/projection_title"
+-            app:layout_constraintStart_toEndOf="@id/projection_title" />
+-
+-        <TextView
+-            android:id="@+id/wifi_text"
+-            android:layout_width="0dp"
+-            android:layout_height="wrap_content"
+-            android:layout_marginTop="2dp"
+-            android:layout_marginEnd="16dp"
+-            android:ellipsize="end"
+-            android:fontFamily="sans-serif"
+-            android:maxLines="1"
+-            android:text="@string/dedicated_home_ready_detail"
+-            android:textColor="@color/tracer_text_muted"
+-            android:textSize="10sp"
+-            app:layout_constraintEnd_toStartOf="@id/platform_actions"
+-            app:layout_constraintStart_toStartOf="@id/projection_title"
+-            app:layout_constraintTop_toBottomOf="@id/projection_title" />
++            app:layout_constraintTop_toTopOf="parent">
++
++            <com.google.android.material.button.MaterialButton
++                android:id="@+id/device_apps_button"
++                style="@style/Widget.Material3.Button.OutlinedButton"
++                android:layout_width="108dp"
++                android:layout_height="48dp"
++                android:contentDescription="@string/device_apps_accessibility"
++                android:fontFamily="sans-serif-medium"
++                android:insetLeft="0dp"
++                android:insetTop="0dp"
++                android:insetRight="0dp"
++                android:insetBottom="0dp"
++                android:letterSpacing="0.06"
++                android:maxLines="1"
++                android:minHeight="48dp"
++                android:minWidth="0dp"
++                android:text="@string/device_apps_short"
++                android:textColor="@color/tracer_text_secondary"
++                android:textSize="10sp"
++                android:textStyle="bold"
++                app:backgroundTint="#0B0C0E"
++                app:cornerRadius="6dp"
++                app:icon="@drawable/ic_apps"
++                app:iconGravity="textStart"
++                app:iconPadding="6dp"
++                app:iconSize="20dp"
++                app:iconTint="@color/tracer_text_secondary"
++                app:strokeColor="#3C3F45"
++                app:strokeWidth="1dp" />
++        </LinearLayout>
  
          <LinearLayout
              android:id="@+id/platform_actions"
@@ -21638,7 +22404,7 @@ index 88fc47ab893508247a39c04ad780314421adce60..52c7afd7f6dae5e2a24ba47201474d34
              android:layout_height="48dp"
              android:layout_marginEnd="9dp"
              android:gravity="center_vertical"
-@@ -483,58 +491,6 @@
+@@ -483,58 +480,6 @@
              app:layout_constraintEnd_toEndOf="parent"
              app:layout_constraintTop_toTopOf="parent">
  
@@ -21697,6 +22463,23 @@ index 88fc47ab893508247a39c04ad780314421adce60..52c7afd7f6dae5e2a24ba47201474d34
              <com.google.android.material.button.MaterialButton
                  android:id="@+id/wifi_button"
                  android:layout_width="185dp"
+@@ -543,10 +488,16 @@
+                 android:autoSizeMinTextSize="9sp"
+                 android:autoSizeStepGranularity="1sp"
+                 android:autoSizeTextType="uniform"
++                android:accessibilityLiveRegion="polite"
+                 android:contentDescription="@string/dedicated_home_connect"
+                 android:fontFamily="sans-serif-medium"
++                android:insetLeft="0dp"
++                android:insetTop="0dp"
++                android:insetRight="0dp"
++                android:insetBottom="0dp"
+                 android:letterSpacing="0.07"
+                 android:maxLines="1"
++                android:minHeight="48dp"
+                 android:text="@string/dedicated_home_connect"
+                 android:textAllCaps="true"
+                 android:textColor="@android:color/white"
 diff --git a/app/src/main/res/layout/fragment_keymap.xml b/app/src/main/res/layout/fragment_keymap.xml
 index 59449b656d4a5f3f86eadc20f34836cce869e372..c3eda0004ce034d51182a13fc5980b878fb2aaff 100644
 --- a/app/src/main/res/layout/fragment_keymap.xml
@@ -22186,6 +22969,62 @@ index 0000000000000000000000000000000000000000..2e470fbea0df1be3095dc92908281f28
 +        </androidx.constraintlayout.widget.ConstraintLayout>
 +    </androidx.constraintlayout.widget.ConstraintLayout>
 +</LinearLayout>
+diff --git a/app/src/main/res/layout/item_device_app.xml b/app/src/main/res/layout/item_device_app.xml
+new file mode 100644
+index 0000000000000000000000000000000000000000..87ffe3a035718a63550e794ae31c458f8af497af
+--- /dev/null
++++ b/app/src/main/res/layout/item_device_app.xml
+@@ -0,0 +1,50 @@
++<?xml version="1.0" encoding="utf-8"?>
++<com.google.android.material.card.MaterialCardView xmlns:android="http://schemas.android.com/apk/res/android"
++    xmlns:app="http://schemas.android.com/apk/res-auto"
++    android:id="@+id/device_app_card"
++    android:layout_width="match_parent"
++    android:layout_height="wrap_content"
++    android:layout_marginHorizontal="6dp"
++    android:layout_marginVertical="5dp"
++    android:clickable="true"
++    android:focusable="true"
++    android:foreground="?attr/selectableItemBackground"
++    android:minHeight="72dp"
++    app:cardBackgroundColor="#E60E110D"
++    app:cardCornerRadius="7dp"
++    app:cardElevation="0dp"
++    app:rippleColor="#596D7B3E"
++    app:strokeColor="#3E4736"
++    app:strokeWidth="1dp">
++
++    <LinearLayout
++        android:layout_width="wrap_content"
++        android:layout_height="match_parent"
++        android:layout_gravity="center"
++        android:gravity="center_vertical"
++        android:orientation="horizontal"
++        android:paddingHorizontal="16dp"
++        android:paddingVertical="10dp">
++
++        <ImageView
++            android:id="@+id/device_app_icon"
++            android:layout_width="40dp"
++            android:layout_height="40dp"
++            android:contentDescription="@null"
++            android:importantForAccessibility="no"
++            android:scaleType="fitCenter" />
++
++        <TextView
++            android:id="@+id/device_app_label"
++            android:layout_width="wrap_content"
++            android:layout_height="wrap_content"
++            android:layout_marginStart="16dp"
++            android:ellipsize="end"
++            android:fontFamily="sans-serif-medium"
++            android:maxWidth="250dp"
++            android:maxLines="1"
++            android:textColor="@android:color/white"
++            android:textSize="16sp" />
++    </LinearLayout>
++
++</com.google.android.material.card.MaterialCardView>
 diff --git a/app/src/main/res/layout/item_tpms_candidate.xml b/app/src/main/res/layout/item_tpms_candidate.xml
 new file mode 100644
 index 0000000000000000000000000000000000000000..80b50be2926844b295ce068816b2d649ea5c3167
@@ -22606,10 +23445,10 @@ index fbfa87c9bdfcec2e368a16a580920bccb6ff2598..34b1bb174dc9ce5c67f392f1966b7a65
 +    <string name="tpms_alert_dismiss">Zamknij komunikat TPMS</string>
  </resources>
 diff --git a/app/src/main/res/values-pt-rBR/strings.xml b/app/src/main/res/values-pt-rBR/strings.xml
-index 9bb069efa3d98fad82bc37cdc0cd92e5aa99dbda..a461bf2fe1035043c0fbd60904c6ef7d9f37849f 100644
+index 9bb069efa3d98fad82bc37cdc0cd92e5aa99dbda..eaf6f157be435004c2ab0ed2307de76dd12242ca 100644
 --- a/app/src/main/res/values-pt-rBR/strings.xml
 +++ b/app/src/main/res/values-pt-rBR/strings.xml
-@@ -9,26 +9,28 @@
+@@ -9,26 +9,41 @@
      <string name="allowed">Permitido</string>
      <string name="ignored">Ignorado</string>
      <string name="exit">Sair</string>
@@ -22622,15 +23461,16 @@ index 9bb069efa3d98fad82bc37cdc0cd92e5aa99dbda..a461bf2fe1035043c0fbd60904c6ef7d
 +    <string name="dedicated_home_subtitle">RECEPTOR ANDROID AUTO</string>
 +    <string name="dedicated_home_vehicle_short">OPEN HEADUNIT</string>
 +    <string name="dedicated_home_subtitle_short">ANDROID AUTO</string>
-+    <string name="dedicated_home_projection_title">Android Auto</string>
      <string name="dedicated_home_connect">Conectar</string>
 -    <string name="dedicated_home_return">Voltar ao Android Auto</string>
-+    <string name="dedicated_home_return">Abrir Android Auto</string>
++    <string name="dedicated_home_connect_accessibility">Conectar ao Android Auto</string>
++    <string name="dedicated_home_return">Voltar</string>
++    <string name="dedicated_home_return_accessibility">Voltar ao Android Auto</string>
      <string name="dedicated_home_connecting">Conectando…</string>
-     <string name="dedicated_home_ready_badge">PRONTO</string>
-     <string name="dedicated_home_connecting_badge">CONECTANDO</string>
-     <string name="dedicated_home_connected_badge">CONECTADO</string>
-     <string name="dedicated_home_ready_detail">Toque para conectar seu telefone</string>
+-    <string name="dedicated_home_ready_badge">PRONTO</string>
+-    <string name="dedicated_home_connecting_badge">CONECTANDO</string>
+-    <string name="dedicated_home_connected_badge">CONECTADO</string>
+-    <string name="dedicated_home_ready_detail">Toque para conectar seu telefone</string>
 -    <string name="dedicated_home_connecting_detail">Acordando o telefone e criando o link sem fio</string>
 -    <string name="dedicated_home_connected_detail">Projeção ativa e pronta para uso</string>
 -    <string name="dedicated_home_carplay">CARPLAY</string>
@@ -22639,8 +23479,9 @@ index 9bb069efa3d98fad82bc37cdc0cd92e5aa99dbda..a461bf2fe1035043c0fbd60904c6ef7d
 -    <string name="dedicated_home_audio_label">ROTA DE ÁUDIO</string>
 -    <string name="dedicated_home_audio_phone">Telefone principal → intercom</string>
 -    <string name="dedicated_home_audio_xcover">Alto-falante do XCover</string>
-+    <string name="dedicated_home_connecting_detail">Preparando a conexão…</string>
-+    <string name="dedicated_home_connected_detail">Android Auto em execução</string>
++    <string name="dedicated_home_connecting_accessibility">Conectando ao Android Auto</string>
++    <string name="dedicated_home_connecting_state">Conexão em andamento</string>
++    <string name="dedicated_home_connected_state">Android Auto conectado</string>
 +    <string name="dedicated_home_audio_label">SAÍDA DE ÁUDIO</string>
 +    <string name="dedicated_home_audio_phone">Reprodução no telefone conectado</string>
 +    <string name="dedicated_home_audio_receiver">Reprodução neste aparelho</string>
@@ -22649,10 +23490,25 @@ index 9bb069efa3d98fad82bc37cdc0cd92e5aa99dbda..a461bf2fe1035043c0fbd60904c6ef7d
 +    <string name="touch_lock_accessibility">Toque desativado. Pressione o botão lateral para liberar a tela.</string>
 +    <string name="touch_lock_released">TOQUE LIBERADO</string>
 +    <string name="touch_lock_released_accessibility">Toque liberado.</string>
++    <string name="device_access_category">DISPOSITIVO</string>
++    <string name="device_apps">Apps do dispositivo</string>
++    <string name="device_apps_short">APPS</string>
++    <string name="device_apps_description">Ver e abrir os apps instalados neste dispositivo</string>
++    <string name="device_apps_accessibility">Abrir apps do dispositivo</string>
++    <string name="device_apps_empty">Nenhum app para mostrar</string>
++    <string name="device_apps_back_accessibility">Voltar</string>
++    <string name="device_app_open_accessibility">Abrir %1$s</string>
++    <string name="device_app_open_failed">Não foi possível abrir %1$s</string>
++    <string name="system_settings">Configurações do sistema</string>
++    <string name="system_settings_short">SISTEMA</string>
++    <string name="system_settings_description">Gerenciar Wi-Fi, Bluetooth, tela e outras configurações deste dispositivo</string>
++    <string name="system_settings_accessibility">Abrir configurações do sistema</string>
++    <string name="receiver_settings_accessibility">Abrir configurações do receptor</string>
++    <string name="device_surface_unavailable">Esta tela do dispositivo não está disponível.</string>
      <string name="dedicated_home_tpms_label">TPMS</string>
      <string name="dedicated_home_tpms_unconfigured">Não configurado</string>
      <string name="dedicated_home_tpms_unconfigured_short">SEM SENSORES</string>
-@@ -37,9 +39,131 @@
+@@ -37,9 +52,131 @@
      <string name="dedicated_home_tpms_temperature">TEMPERATURA</string>
      <string name="dedicated_home_tpms_placeholder">--.-</string>
      <string name="dedicated_home_tpms_temperature_placeholder">-- °C</string>
@@ -22787,7 +23643,7 @@ index 9bb069efa3d98fad82bc37cdc0cd92e5aa99dbda..a461bf2fe1035043c0fbd60904c6ef7d
      <string name="video">Android Auto</string>
      <string name="self_mode">Self Mode</string>
      <string name="to_android_auto">Ir para o Android Auto</string>
-@@ -202,9 +326,11 @@
+@@ -202,9 +339,11 @@
      <string name="auto_start_oem_warning">Este dispositivo pode exigir a ativação do início automático e a remoção da otimização de bateria ou restrições em segundo plano para este aplicativo.\n\nEm centrais multimídia com Quick Boot (inicialização rápida), o início automático pode não funcionar. Procure \"DuraSpeed\" nas configurações do sistema e ative este aplicativo lá. Em algumas centrais, o DuraSpeed está oculto e você pode precisar de um aplicativo como \"Hidden Settings\" para encontrá-lo. Se você não tem DuraSpeed, tente desativar o Quick Boot.</string>
      <string name="auto_start_on_boot_label">Iniciar na inicialização</string>
      <string name="auto_start_on_boot_description">Abrir o app automaticamente quando o dispositivo iniciar. Requer a permissão \'Exibir sobre outros apps\' no Android 10+</string>
@@ -22800,7 +23656,7 @@ index 9bb069efa3d98fad82bc37cdc0cd92e5aa99dbda..a461bf2fe1035043c0fbd60904c6ef7d
      <string name="bt_device_not_set">Não definido</string>
      <string name="bt_permission_denied_title">Permissão de Bluetooth necessária</string>
      <string name="bt_permission_denied_message">A permissão de Bluetooth é necessária para selecionar dispositivos pareados. Conceda-a nas configurações do app.</string>
-@@ -447,7 +573,7 @@
+@@ -447,7 +586,7 @@
      <string name="kill_on_disconnect_screen_on_warning">Você tem \"Iniciar ao ligar a tela\" ativado. Esta configuração abre o app toda vez que a tela é ligada. Combinado com fechar ao desconectar, o app será fechado após a desconexão, mas reabrirá imediatamente quando a tela ligar novamente, criando um loop de reinício.</string>
      <string name="kill_on_disconnect_conflicts_disabled">As configurações conflitantes foram desativadas</string>
      <string name="wifi_disabled_info">Info: O Wi-Fi está desativado.</string>
@@ -22809,7 +23665,7 @@ index 9bb069efa3d98fad82bc37cdc0cd92e5aa99dbda..a461bf2fe1035043c0fbd60904c6ef7d
  
      <!-- Vehicle Info Settings -->
      <string name="vehicle_info_settings">Informações do veículo</string>
-@@ -561,7 +687,7 @@
+@@ -561,7 +700,7 @@
      <string name="mic_auto_gain_control">Controle automático de ganho (AGC)</string>
      <string name="mic_auto_gain_control_description">Ajusta automaticamente o volume do microfone. Desative se o volume estiver instável.</string>
      <string name="mic_feature_unsupported">Este recurso não é compatível com seu dispositivo.</string>
@@ -22948,10 +23804,10 @@ index ca9c5847ef8bc3f952014d2bf9699f66bef8b84c..cecc98c35d322aaaf3258ed5a11a9f6d
      <!-- Segmented Button Colors -->
      <color name="segmented_button_stroke">#808080</color>
 diff --git a/app/src/main/res/values/strings.xml b/app/src/main/res/values/strings.xml
-index 1b9803d36d66892580fa5bbba0d465024e712280..3a32fb9079c649dbc0ed3a9a0b63884b9d637056 100644
+index 1b9803d36d66892580fa5bbba0d465024e712280..5e6cd49dc46fa6489049d77ab4b2a5b88508fc11 100644
 --- a/app/src/main/res/values/strings.xml
 +++ b/app/src/main/res/values/strings.xml
-@@ -172,26 +172,28 @@
+@@ -172,26 +172,41 @@
      <string name="allowed">Allowed</string>
      <string name="ignored">Ignored</string>
      <string name="exit">Exit</string>
@@ -22964,14 +23820,15 @@ index 1b9803d36d66892580fa5bbba0d465024e712280..3a32fb9079c649dbc0ed3a9a0b63884b
 +    <string name="dedicated_home_subtitle">ANDROID AUTO RECEIVER</string>
 +    <string name="dedicated_home_vehicle_short">OPEN HEADUNIT</string>
 +    <string name="dedicated_home_subtitle_short">ANDROID AUTO</string>
-+    <string name="dedicated_home_projection_title">Android Auto</string>
      <string name="dedicated_home_connect">Connect</string>
 -    <string name="dedicated_home_return">Return to Android Auto</string>
-+    <string name="dedicated_home_return">Open Android Auto</string>
++    <string name="dedicated_home_connect_accessibility">Connect to Android Auto</string>
++    <string name="dedicated_home_return">Return</string>
++    <string name="dedicated_home_return_accessibility">Return to Android Auto</string>
      <string name="dedicated_home_connecting">Connecting…</string>
-     <string name="dedicated_home_ready_badge">READY</string>
-     <string name="dedicated_home_connecting_badge">CONNECTING</string>
-     <string name="dedicated_home_connected_badge">CONNECTED</string>
+-    <string name="dedicated_home_ready_badge">READY</string>
+-    <string name="dedicated_home_connecting_badge">CONNECTING</string>
+-    <string name="dedicated_home_connected_badge">CONNECTED</string>
 -    <string name="dedicated_home_ready_detail">Tap to connect to the primary phone</string>
 -    <string name="dedicated_home_connecting_detail">Waking the phone and creating the wireless link</string>
 -    <string name="dedicated_home_connected_detail">Projection active and ready to use</string>
@@ -22981,9 +23838,9 @@ index 1b9803d36d66892580fa5bbba0d465024e712280..3a32fb9079c649dbc0ed3a9a0b63884b
 -    <string name="dedicated_home_audio_label">AUDIO ROUTE</string>
 -    <string name="dedicated_home_audio_phone">Primary phone → intercom</string>
 -    <string name="dedicated_home_audio_xcover">XCover speaker</string>
-+    <string name="dedicated_home_ready_detail">Tap to connect your phone</string>
-+    <string name="dedicated_home_connecting_detail">Preparing the connection…</string>
-+    <string name="dedicated_home_connected_detail">Android Auto is active</string>
++    <string name="dedicated_home_connecting_accessibility">Connecting to Android Auto</string>
++    <string name="dedicated_home_connecting_state">Connection in progress</string>
++    <string name="dedicated_home_connected_state">Android Auto connected</string>
 +    <string name="dedicated_home_audio_label">AUDIO OUTPUT</string>
 +    <string name="dedicated_home_audio_phone">Played by the connected phone</string>
 +    <string name="dedicated_home_audio_receiver">Played by this device</string>
@@ -22992,10 +23849,25 @@ index 1b9803d36d66892580fa5bbba0d465024e712280..3a32fb9079c649dbc0ed3a9a0b63884b
 +    <string name="touch_lock_accessibility">Touch disabled. Press the side button to enable touch.</string>
 +    <string name="touch_lock_released">TOUCH ENABLED</string>
 +    <string name="touch_lock_released_accessibility">Touch enabled.</string>
++    <string name="device_access_category">DEVICE</string>
++    <string name="device_apps">Device apps</string>
++    <string name="device_apps_short">APPS</string>
++    <string name="device_apps_description">Browse and open installed apps on this device</string>
++    <string name="device_apps_accessibility">Open device apps</string>
++    <string name="device_apps_empty">No apps to show</string>
++    <string name="device_apps_back_accessibility">Back</string>
++    <string name="device_app_open_accessibility">Open %1$s</string>
++    <string name="device_app_open_failed">Couldn’t open %1$s</string>
++    <string name="system_settings">System settings</string>
++    <string name="system_settings_short">SYSTEM</string>
++    <string name="system_settings_description">Manage Wi-Fi, Bluetooth, display, and other settings on this device</string>
++    <string name="system_settings_accessibility">Open system settings</string>
++    <string name="receiver_settings_accessibility">Open receiver settings</string>
++    <string name="device_surface_unavailable">This device screen is not available.</string>
      <string name="dedicated_home_tpms_label">TPMS</string>
      <string name="dedicated_home_tpms_unconfigured">Not configured</string>
      <string name="dedicated_home_tpms_unconfigured_short">NO SENSORS</string>
-@@ -200,9 +202,131 @@
+@@ -200,9 +215,131 @@
      <string name="dedicated_home_tpms_temperature">TEMPERATURE</string>
      <string name="dedicated_home_tpms_placeholder">--.-</string>
      <string name="dedicated_home_tpms_temperature_placeholder">-- °C</string>
@@ -23130,7 +24002,7 @@ index 1b9803d36d66892580fa5bbba0d465024e712280..3a32fb9079c649dbc0ed3a9a0b63884b
      <string name="video">Android Auto</string>
      <string name="self_mode">Self Mode</string>
      <string name="to_android_auto">To Android Auto</string>
-@@ -384,7 +508,9 @@
+@@ -384,7 +521,9 @@
      <string name="auto_start_on_boot_description">Open the app automatically when the device starts up. Requires \'Display over other apps\' permission on Android 10+</string>
      <string name="auto_start_screen_on_label">Start on screen on</string>
      <string name="auto_start_screen_on_description">Open the app every time the screen turns on. Ideal for head units that never fully shut down or use fast boot modes where the other auto-start options don\'t work. Not recommended for phones or tablets.</string>
@@ -23141,7 +24013,7 @@ index 1b9803d36d66892580fa5bbba0d465024e712280..3a32fb9079c649dbc0ed3a9a0b63884b
      <string name="bt_device_not_set">Not set</string>
      <string name="auto_start_wifi_label">Auto-start on WiFi</string>
      <string name="auto_start_wifi_description">Automatically open Open Headunit when connected to a specific WiFi SSID.</string>
-@@ -709,8 +835,8 @@
+@@ -709,8 +848,8 @@
      <string name="kill_on_disconnect_screen_on_warning">You have \"Start on screen on\" enabled. This setting opens the app every time the screen turns on. Combined with closing on disconnect, the app will close after disconnection but reopen immediately when the screen turns on again, creating a restart loop.</string>
  
      <string name="wifi_disabled_info">Info: Wi-Fi is disabled.</string>
@@ -23215,10 +24087,10 @@ index c4468436dbb7b27a3e5106565d47532471dcc2ae..abd92e922a390ebca58b1944dd5a8bb5
  }
 diff --git a/app/src/test/java/com/andrerinas/headunitrevived/main/DedicatedCopyContractTest.kt b/app/src/test/java/com/andrerinas/headunitrevived/main/DedicatedCopyContractTest.kt
 new file mode 100644
-index 0000000000000000000000000000000000000000..dc9ad5777faae3ff593c63eb54815fcbc2894ddd
+index 0000000000000000000000000000000000000000..e18278764171771f10c576bb38d4a3a9fea371f1
 --- /dev/null
 +++ b/app/src/test/java/com/andrerinas/headunitrevived/main/DedicatedCopyContractTest.kt
-@@ -0,0 +1,91 @@
+@@ -0,0 +1,105 @@
 +package com.andrerinas.openheadunit.main
 +
 +import java.io.File
@@ -23266,11 +24138,19 @@ index 0000000000000000000000000000000000000000..dc9ad5777faae3ff593c63eb54815fcb
 +        val english = File("src/main/res/values/strings.xml").readText()
 +        val portuguese = File("src/main/res/values-pt-rBR/strings.xml").readText()
 +
-+        assertTrue(english.contains("<string name=\"dedicated_home_ready_detail\">Tap to connect your phone</string>"))
++        assertTrue(english.contains("<string name=\"dedicated_home_connect\">Connect</string>"))
++        assertTrue(english.contains("<string name=\"dedicated_home_return\">Return</string>"))
 +        assertTrue(english.contains("<string name=\"dedicated_home_audio_receiver\">Played by this device</string>"))
-+        assertTrue(portuguese.contains("<string name=\"dedicated_home_ready_detail\">Toque para conectar seu telefone</string>"))
++        assertTrue(portuguese.contains("<string name=\"dedicated_home_connect\">Conectar</string>"))
++        assertTrue(portuguese.contains("<string name=\"dedicated_home_return\">Voltar</string>"))
 +        assertTrue(portuguese.contains("<string name=\"dedicated_home_audio_receiver\">Reprodução neste aparelho</string>"))
 +        assertTrue(portuguese.contains("<string name=\"tpms_safety_note\">SOMENTE COM O VEÍCULO PARADO</string>"))
++        assertTrue(english.contains("<string name=\"receiver_settings_accessibility\">Open receiver settings</string>"))
++        assertTrue(portuguese.contains("<string name=\"receiver_settings_accessibility\">Abrir configurações do receptor</string>"))
++        assertTrue(english.contains("<string name=\"device_apps_empty\">No apps to show</string>"))
++        assertTrue(portuguese.contains("<string name=\"device_apps_empty\">Nenhum app para mostrar</string>"))
++        assertFalse(english.contains("device_surface_parked_message"))
++        assertFalse(portuguese.contains("device_surface_parked_message"))
 +    }
 +
 +    @Test
@@ -23279,9 +24159,15 @@ index 0000000000000000000000000000000000000000..dc9ad5777faae3ff593c63eb54815fcb
 +        val portuguese = File("src/main/res/values-pt-rBR/strings.xml").readText()
 +
 +        assertTrue(english.contains("<string name=\"dedicated_home_subtitle_short\">ANDROID AUTO</string>"))
-+        assertTrue(english.contains("<string name=\"dedicated_home_connecting_detail\">Preparing the connection…</string>"))
++        assertTrue(english.contains("<string name=\"dedicated_home_connecting\">Connecting…</string>"))
 +        assertTrue(portuguese.contains("<string name=\"dedicated_home_subtitle_short\">ANDROID AUTO</string>"))
-+        assertTrue(portuguese.contains("<string name=\"dedicated_home_connecting_detail\">Preparando a conexão…</string>"))
++        assertTrue(portuguese.contains("<string name=\"dedicated_home_connecting\">Conectando…</string>"))
++        assertFalse(english.contains("dedicated_home_connecting_badge"))
++        assertFalse(portuguese.contains("dedicated_home_connecting_badge"))
++        assertFalse(english.contains("dedicated_home_ready"))
++        assertFalse(portuguese.contains("dedicated_home_ready"))
++        assertFalse(english.contains("dedicated_home_ready_detail"))
++        assertFalse(portuguese.contains("dedicated_home_ready_detail"))
 +        assertFalse(english.contains("<string name=\"dedicated_home_subtitle_short\">WIRELESS ANDROID AUTO</string>"))
 +        assertFalse(portuguese.contains("ANDROID AUTO SEM FIO"))
 +    }
@@ -23332,14 +24218,115 @@ index 52646349c1ef61e3d3317fde6c0e0f1cd7852eb9..291e8661ede5f7f140ef8b6ac817e923
 +        assertTrue(roundIcon.contains("@drawable/ic_launcher_yamaha_foreground"))
 +    }
  }
+diff --git a/app/src/test/java/com/andrerinas/headunitrevived/main/DedicatedLauncherContractTest.kt b/app/src/test/java/com/andrerinas/headunitrevived/main/DedicatedLauncherContractTest.kt
+new file mode 100644
+index 0000000000000000000000000000000000000000..f15a3ae6f873973e8aa443fca262951c0936417e
+--- /dev/null
++++ b/app/src/test/java/com/andrerinas/headunitrevived/main/DedicatedLauncherContractTest.kt
+@@ -0,0 +1,89 @@
++package com.andrerinas.openheadunit.main
++
++import java.io.File
++import org.junit.Assert.assertTrue
++import org.junit.Test
++
++class DedicatedLauncherContractTest {
++
++    @Test
++    fun `main activity can be selected as the dedicated home activity`() {
++        val manifest = File("src/main/AndroidManifest.xml").readText()
++
++        assertTrue(manifest.contains("android:name=\".main.MainActivity\""))
++        assertTrue(manifest.contains("android.intent.category.HOME"))
++        assertTrue(manifest.contains("android.intent.category.DEFAULT"))
++    }
++
++    @Test
++    fun `receiver owns its app drawer and routes directly to system settings`() {
++        val manifest = File("src/main/AndroidManifest.xml").readText()
++        val quickSettings = File(
++            "src/main/java/com/andrerinas/openheadunit/main/QuickSettingsFragment.kt"
++        ).readText()
++        val settings = File(
++            "src/main/java/com/andrerinas/openheadunit/main/SettingsFragment.kt"
++        ).readText()
++        val home = File(
++            "src/main/java/com/andrerinas/openheadunit/main/HomeFragment.kt"
++        ).readText()
++        val homeLayout = File("src/main/res/layout/fragment_home.xml").readText()
++        val deviceApps = File(
++            "src/main/java/com/andrerinas/openheadunit/main/DeviceAppsActivity.kt"
++        ).readText()
++        val deviceAppsLayout = File("src/main/res/layout/activity_device_apps.xml").readText()
++        val deviceAppItem = File("src/main/res/layout/item_device_app.xml").readText()
++        val english = File("src/main/res/values/strings.xml").readText()
++        val portuguese = File("src/main/res/values-pt-rBR/strings.xml").readText()
++
++        assertTrue(manifest.contains("android:name=\".main.DeviceAppsActivity\""))
++        assertTrue(manifest.contains("android.intent.category.LAUNCHER"))
++        assertTrue(quickSettings.contains("DeviceAppsActivity::class.java"))
++        assertTrue(quickSettings.contains("AndroidSettings.ACTION_SETTINGS"))
++        assertTrue(settings.contains("\"deviceApps\", \"systemSettings\""))
++        assertTrue(settings.contains("DeviceAppsActivity::class.java"))
++        assertTrue(settings.contains("SystemSettings.ACTION_SETTINGS"))
++        assertTrue(home.contains("DeviceAppsActivity::class.java"))
++        assertTrue(!home.contains("android.provider.Settings.ACTION_SETTINGS"))
++        assertTrue(!home.contains("confirmDeviceSurface"))
++        assertTrue(!home.contains("device_surface_parked_message"))
++        assertTrue(!home.contains("com.sec.android.app.launcher"))
++        assertTrue(!settings.contains("com.sec.android.app.launcher"))
++        assertTrue(!quickSettings.contains("com.sec.android.app.launcher"))
++        assertTrue(deviceApps.contains("class DeviceAppsActivity : BaseActivity()"))
++        assertTrue(deviceApps.contains("Intent.CATEGORY_LAUNCHER"))
++        assertTrue(deviceApps.contains("queryIntentActivities"))
++        assertTrue(deviceApps.contains("GridLayoutManager"))
++        assertTrue(deviceApps.contains("EXCLUDED_PACKAGES"))
++        assertTrue(deviceApps.contains("AndroidSettings.ACTION_SETTINGS"))
++        assertTrue(deviceApps.contains("listOf(loadSystemSettingsEntry()) + launchableApps"))
++        assertTrue(deviceAppsLayout.contains("@+id/device_apps_list"))
++        assertTrue(deviceAppsLayout.contains("@+id/device_apps_back"))
++        assertTrue(!deviceAppsLayout.contains("@+id/device_apps_title"))
++        assertTrue(deviceAppItem.contains("android:minHeight=\"72dp\""))
++        assertTrue(deviceAppItem.contains("android:layout_gravity=\"center\""))
++        assertTrue(deviceAppItem.contains("android:maxWidth=\"250dp\""))
++        assertTrue(homeLayout.contains("@+id/device_apps_button"))
++        assertTrue(!homeLayout.contains("@+id/system_settings_button"))
++        assertTrue(english.contains("<string name=\"device_apps\">Device apps</string>"))
++        assertTrue(english.contains("<string name=\"system_settings\">System settings</string>"))
++        assertTrue(portuguese.contains("<string name=\"device_apps\">Apps do dispositivo</string>"))
++        assertTrue(portuguese.contains("<string name=\"system_settings\">Configurações do sistema</string>"))
++        assertTrue(!english.contains("Phone settings"))
++        assertTrue(!portuguese.contains("Configurações do telefone"))
++        assertTrue(!english.contains("device_surface_parked_message"))
++        assertTrue(!portuguese.contains("device_surface_parked_message"))
++    }
++
++    @Test
++    fun `dedicated debug variant supports ART compilation and test surfaces`() {
++        val gradle = File("build.gradle.kts").readText()
++
++        assertTrue(gradle.contains("isDebuggable = false"))
++        assertTrue(
++            gradle.contains(
++                "buildConfigField(\"Boolean\", \"ENABLE_DEDICATED_TESTS\", \"true\")"
++            )
++        )
++    }
++}
 diff --git a/app/src/test/java/com/andrerinas/headunitrevived/main/HomeLayoutContractTest.kt b/app/src/test/java/com/andrerinas/headunitrevived/main/HomeLayoutContractTest.kt
-index 71f45ccfa2c0bb27f5523d139ec020cf0d9f7a23..03e2827f4d90cb4988077d9352c81146183ba176 100644
+index 71f45ccfa2c0bb27f5523d139ec020cf0d9f7a23..74b8be313a7a86271f436e91068da03c3a2ea472 100644
 --- a/app/src/test/java/com/andrerinas/headunitrevived/main/HomeLayoutContractTest.kt
 +++ b/app/src/test/java/com/andrerinas/headunitrevived/main/HomeLayoutContractTest.kt
-@@ -17,7 +17,13 @@ class HomeLayoutContractTest {
+@@ -12,12 +12,17 @@ class HomeLayoutContractTest {
+             "self_mode_button",
+             "usb_button",
+             "settings_button",
++            "device_apps_button",
+             "wifi_button",
+-            "wifi_text",
              "exit_button",
              "self_mode_text",
-             "connection_badge",
+-            "connection_badge",
 -            "audio_route_text"
 +            "audio_route_text",
 +            "tpms_panel",
@@ -23351,7 +24338,7 @@ index 71f45ccfa2c0bb27f5523d139ec020cf0d9f7a23..03e2827f4d90cb4988077d9352c81146
          )
  
          listOf(
-@@ -38,14 +44,46 @@ class HomeLayoutContractTest {
+@@ -38,14 +43,109 @@ class HomeLayoutContractTest {
      }
  
      @Test
@@ -23375,7 +24362,8 @@ index 71f45ccfa2c0bb27f5523d139ec020cf0d9f7a23..03e2827f4d90cb4988077d9352c81146
 +
 +        assertTrue(xml.contains("@+id/tracer_hero"))
 +        assertTrue(xml.contains("@drawable/tracer_900_gt_hero"))
-+        assertTrue(xml.contains("@string/tracer_900_gt_image_description"))
++        assertTrue(xml.contains("android:contentDescription=\"@null\""))
++        assertTrue(xml.contains("android:importantForAccessibility=\"no\""))
 +        assertTrue(!xml.contains("@+id/receiver_status_panel"))
 +        assertTrue(!xml.contains("@+id/power_source_text"))
 +        assertTrue(!xml.contains("@+id/battery_percent_text"))
@@ -23401,6 +24389,68 @@ index 71f45ccfa2c0bb27f5523d139ec020cf0d9f7a23..03e2827f4d90cb4988077d9352c81146
 +        assertTrue(candidate.contains("@+id/tpms_use_candidate"))
 +        assertTrue(!candidate.contains("@+id/tpms_assign_front"))
 +        assertTrue(!candidate.contains("@+id/tpms_assign_rear"))
++    }
++
++    @Test
++    fun `maintenance shortcuts use free space inside the connection bar`() {
++        val xml = File("src/main/res/layout/fragment_home.xml").readText()
++        val home = File(
++            "src/main/java/com/andrerinas/openheadunit/main/HomeFragment.kt"
++        ).readText()
++
++        assertTrue(xml.contains("android:id=\"@+id/connection_bar\""))
++        assertTrue(xml.contains("android:layout_height=\"66dp\""))
++        assertTrue(xml.contains("android:id=\"@+id/maintenance_actions\""))
++        assertTrue(xml.contains("android:id=\"@+id/device_apps_button\""))
++        assertTrue(!xml.contains("android:id=\"@+id/system_settings_button\""))
++        assertTrue(!xml.contains("maintenance_actions_guideline"))
++        assertTrue(xml.contains("android:id=\"@+id/maintenance_actions\"\n            android:layout_width=\"108dp\""))
++        assertTrue(
++            Regex(
++                "android:id=\\\"@\\+id/maintenance_actions\\\"[\\s\\S]*?" +
++                    "android:layout_marginStart=\\\"9dp\\\"[\\s\\S]*?" +
++                    "app:layout_constraintStart_toStartOf=\\\"parent\\\""
++            ).containsMatchIn(xml)
++        )
++        listOf("device_apps_button", "wifi_button").forEach { id ->
++            assertTrue(
++                Regex(
++                    "android:id=\\\"@\\+id/$id\\\"[\\s\\S]*?" +
++                        "android:layout_height=\\\"48dp\\\"[\\s\\S]*?" +
++                        "android:insetLeft=\\\"0dp\\\"[\\s\\S]*?" +
++                        "android:insetTop=\\\"0dp\\\"[\\s\\S]*?" +
++                        "android:insetRight=\\\"0dp\\\"[\\s\\S]*?" +
++                        "android:insetBottom=\\\"0dp\\\""
++                ).containsMatchIn(xml)
++            )
++        }
++        assertTrue(
++            Regex(
++                "android:id=\\\"@\\+id/device_apps_button\\\"[\\s\\S]*?" +
++                    "android:textSize=\\\"10sp\\\""
++            ).containsMatchIn(xml)
++        )
++        assertTrue(
++            Regex(
++                "android:id=\\\"@\\+id/platform_actions\\\"[\\s\\S]*?" +
++                    "android:layout_marginEnd=\\\"9dp\\\"[\\s\\S]*?" +
++                    "app:layout_constraintBottom_toBottomOf=\\\"parent\\\"[\\s\\S]*?" +
++                    "app:layout_constraintTop_toTopOf=\\\"parent\\\""
++            ).containsMatchIn(xml)
++        )
++        assertTrue(!xml.contains("android:id=\"@+id/connection_badge\""))
++        assertTrue(!xml.contains("android:id=\"@+id/connection_dot\""))
++        assertTrue(!xml.contains("android:id=\"@+id/projection_title\""))
++        assertTrue(!xml.contains("android:id=\"@+id/wifi_text\""))
++        assertTrue(xml.contains("android:visibility=\"gone\""))
++        assertTrue(xml.contains("android:minHeight=\"48dp\""))
++        assertTrue(xml.contains("app:backgroundTint=\"@color/tracer_accent\""))
++        assertTrue(xml.contains("android:accessibilityLiveRegion=\"polite\""))
++        assertTrue(!home.contains("connectionBadge"))
++        assertTrue(!home.contains("connectionDot"))
++        assertTrue(home.contains("dedicated_home_connecting_accessibility"))
++        assertTrue(home.contains("dedicated_home_return_accessibility"))
++        assertTrue(home.contains("wifi.stateDescription = description"))
      }
  }
 diff --git a/app/src/test/java/com/andrerinas/headunitrevived/main/UnpluggedPowerPolicyContractTest.kt b/app/src/test/java/com/andrerinas/headunitrevived/main/UnpluggedPowerPolicyContractTest.kt
@@ -23790,7 +24840,7 @@ index 0000000000000000000000000000000000000000..41fbc4cdabcd54a442d89e0758ed059c
 +}
 diff --git a/app/src/test/java/com/andrerinas/openheadunit/tpms/TpmsAlertOverlayContractTest.kt b/app/src/test/java/com/andrerinas/openheadunit/tpms/TpmsAlertOverlayContractTest.kt
 new file mode 100644
-index 0000000000000000000000000000000000000000..c21326cd56329a743b5ea801b8b9189dfe99e50a
+index 0000000000000000000000000000000000000000..186d5ec2256273588ede8f680e18c77b934405fd
 --- /dev/null
 +++ b/app/src/test/java/com/andrerinas/openheadunit/tpms/TpmsAlertOverlayContractTest.kt
 @@ -0,0 +1,56 @@
@@ -23831,7 +24881,7 @@ index 0000000000000000000000000000000000000000..c21326cd56329a743b5ea801b8b9189d
 +            "src/main/java/com/andrerinas/openheadunit/aap/AapProjectionActivity.kt"
 +        ).readText()
 +
-+        assertTrue(quickSettings.contains("BuildConfig.DEBUG"))
++        assertTrue(quickSettings.contains("BuildConfig.ENABLE_DEDICATED_TESTS"))
 +        assertTrue(quickSettings.contains("EXTRA_TEST_TPMS_ALERT"))
 +        assertTrue(activity.contains("TpmsAlert.simulatedCriticalLowPressure()"))
 +        assertTrue(activity.contains("SIMULATED_TPMS_ALERT_DURATION_MS = 12_000L"))

@@ -4,7 +4,7 @@ set -eu
 
 usage() {
   printf 'Usage: %s <release-tag> <apk-file> <release-notes-file>\n' "$0" >&2
-  printf 'Example: %s v0.2.0 tmp/release/v0.2.0/open-headunit-tpms-xcover-v0.2.0-debug.apk docs/releases/v0.2.0.md\n' "$0" >&2
+  printf 'Example: %s v0.3.0 tmp/release/v0.3.0/open-headunit-tpms-xcover-v0.3.0-debug.apk docs/releases/v0.3.0.md\n' "$0" >&2
 }
 
 release_tag=${1:-}
@@ -19,7 +19,7 @@ fi
 case "$release_tag" in
   v[0-9]*.[0-9]*.[0-9]*) ;;
   *)
-    printf 'Release tag must look like v0.2.0: %s\n' "$release_tag" >&2
+    printf 'Release tag must look like v0.3.0: %s\n' "$release_tag" >&2
     exit 2
     ;;
 esac

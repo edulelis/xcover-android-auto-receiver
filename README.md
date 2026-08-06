@@ -139,13 +139,15 @@ After setup on the configured receiver:
 2. apply external power to the XCover;
 3. wait for the display to wake and **Open Headunit TPMS** to open;
 4. allow approximately ten seconds for Android Auto to reconnect;
-5. if the home remains at **Ready**, select **Connect** once.
+5. if projection does not start, select **Connect** once.
 
 No companion app needs to be opened on the projecting phone. During projection, that phone may leave its normal Wi-Fi network to join the XCover Wi-Fi Direct group. Wireless ADB to the phone may therefore disappear until projection ends.
 
 When external power is removed, automatic Android Auto wake retries stop so the parked receiver does not repeatedly wake its wireless subsystem. **Connect** remains available for an explicit manual attempt. Stable external power restarts the automatic retry cycle.
 
 The XCover programmable side key (`keyCode 1015`) toggles a rain touch lock. One press blocks application touch while projection, display, and audio continue; a second press restores touch. Restarting the app always returns to unlocked input.
+
+The receiver is Android's default launcher. **Apps** opens its own two-column app drawer; **System settings** is the first drawer item, followed left-to-right and then downward by any enabled launchable apps. Each card centers its icon and label. The drawer header contains only a Back action, and Android Back also returns to the receiver home. Disabled cleanup packages are not shown. One UI Home remains installed and enabled only as the rollback launcher.
 
 ## TPMS
 
@@ -185,6 +187,8 @@ The inventory excludes personal application content and redacts the ADB target, 
 | Powered stay-awake, maximum manual brightness, unplugged timeout, and Doze | `scripts/configure-unplugged-sleep.sh` | `scripts/rollback-unplugged-sleep.sh` |
 | Silent notification stream | `scripts/configure-silent-notifications.sh` | `scripts/rollback-silent-notifications.sh` |
 | No-credential boot and wireless-debug restoration | `scripts/configure-dedicated-boot.sh` | `scripts/rollback-dedicated-boot.sh` |
+| Receiver as default launcher, with One UI Home retained for rollback | `scripts/configure-dedicated-launcher.sh` | `scripts/rollback-dedicated-launcher.sh` |
+| Full ART compilation and 0.5× system animations | `scripts/configure-receiver-performance.sh` | `scripts/rollback-receiver-performance.sh` |
 | Optional application cleanup | `scripts/cleanup-batch-*.sh` | matching `scripts/rollback-cleanup-batch-*.sh` |
 
 Review every script before running it. Apply one category at a time, reboot, and verify Settings, launcher, Wi-Fi, Bluetooth, charging, Android Auto, and rollback before continuing. The boot script is only appropriate for a dedicated receiver with no secure lock credential.
@@ -229,7 +233,7 @@ The repeatable build script creates a clean upstream clone, checks out Open Head
 
 ```sh
 ANDROID_HOME=/path/to/Android/sdk \
-  scripts/build-release-apk.sh v0.2.0
+  scripts/build-release-apk.sh v0.3.0
 ```
 
 The verified toolchain uses JDK 17, Android SDK 36, and NDK `29.0.14206865`. The release script expects the established maintainer certificate. Independent developers may build with their own key for local testing, but that APK cannot update or replace the official public build.

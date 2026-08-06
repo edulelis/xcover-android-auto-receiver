@@ -1,7 +1,7 @@
 ---
 title: UI copy and localization guidelines
 status: current
-last_verified: 2026-08-04
+last_verified: 2026-08-06
 audience: product writers, developers, translators, and LLM agents
 ---
 
@@ -28,7 +28,7 @@ English-first does not mean English-only. Never remove translation directories s
 - Use short, direct sentences.
 - Prefer common words over implementation terminology.
 - Start button labels with an action: `Connect`, `Open Android Auto`, `Resume search`.
-- Describe the current state without promising a future state: `READY`, `CONNECTING`, `CONNECTED`.
+- Show connection state only when it adds information: `CONNECTING` and `CONNECTED`; do not render `READY` beside an already enabled `Connect` action.
 - State what happened and, when useful, the next recovery action.
 - Do not tell a rider how to drive inside a TPMS alert; show the safety-relevant fact.
 - Avoid redundant labels such as `Alert`, `Warning`, or `Wireless` when the surrounding surface already establishes that context.
@@ -46,14 +46,17 @@ English-first does not mean English-only. Never remove translation directories s
 | Rear wheel | `Rear` | vehicle-specific jargon |
 | BLE association | `Set up sensor`, `Use sensor` | Android `pairing` when no Bluetooth bond is created |
 | No live telemetry | `Waiting`, `--.-`, `-- °C` | fabricated zero values |
+| Native launcher route | `Apps` | `Exit`, `phone apps`, `One UI Home`, or a model-specific receiver name |
+| App-drawer header | a Back action only; no redundant title | `Device apps` or other route title |
+| Android configuration drawer item | `System settings` | a generic second `Settings` label |
 
 ## Primary English states
 
 | Context | Copy |
 |---|---|
-| Ready to project | `Tap to connect your phone` |
-| Connecting | `Preparing the wireless connection…` |
-| Projection active | `Android Auto is active` |
+| Ready to project | `Connect` action only; no adjacent ready-state label |
+| Connection in progress | `Connecting…` on the Android Auto button; no duplicate badge |
+| Projection active | `Return` on the Android Auto button |
 | Audio on phone | `Played by the connected phone` |
 | Audio on receiver | `Played by this device` |
 | Empty TPMS scan | `No sensor detected yet` |

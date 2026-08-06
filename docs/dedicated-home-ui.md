@@ -1,7 +1,7 @@
 ---
 title: Dedicated receiver home UI
 status: current with a personal non-commercial theme
-last_verified: 2026-08-04
+last_verified: 2026-08-06
 audience: UI maintainers, reviewers, and LLM agents
 ---
 
@@ -16,6 +16,8 @@ The receiver home is a landscape motorcycle instrument surface rather than a gen
 3. a bottom connection bar with real transport state and one Android Auto action.
 
 Settings remain available through the gear button. Self Mode, USB, CarPlay, Exit, and local OBD are not shown on the dedicated surface. OBD was excluded because RPM and engine temperature already exist on the motorcycle display and would add distraction without a clear operational benefit.
+
+`MainActivity` is Android's default `HOME` activity on the dedicated receiver. The riding surface remains focused on Android Auto and TPMS. A 48 dp **Apps** action in the bottom bar opens a native, two-column drawer owned by the receiver. **System settings** is pinned as the first drawer item, followed by enabled launchable apps in locale-aware alphabetical order, flowing left-to-right and then downward. Each card centers its icon and label as one group. The header intentionally contains only a 48 dp Back action: it and Android Back return to receiver home; Android Back from System Settings returns to this drawer first. One UI Home is not part of the daily route; it remains installed and enabled only for launcher rollback.
 
 ## Information hierarchy
 
@@ -49,9 +51,15 @@ The bottom bar is derived from the real transport state:
 
 | State | UI behavior |
 |---|---|
-| `READY` | connection action enabled; copy invites the user to connect a phone |
+| `READY` | no adjacent status copy; the enabled `Connect` action is sufficient |
 | `CONNECTING` | action temporarily disabled; wireless connection is being prepared |
 | `CONNECTED` | action returns to the active projection |
+
+The connection bar is 66 dp high. **Apps** and **Connect** are both 48 dp high and vertically centered, leaving 9 dp above and below. **Apps** is anchored 9 dp from the left edge and **Connect** 9 dp from the right. The motorcycle and TPMS zones are not moved or rescaled. No status region, dot, badge, or guideline remains: the large empty center separates the secondary launcher action from the primary Android Auto action.
+
+The Android Auto button is the single visual source of connection state: `Connect` when idle, `Connecting…` while the handshake runs, and `Return` when a projection session is active. It uses a polite accessibility live region and state-specific descriptions. There is no visible `READY`/`PRONTO` label.
+
+Opening **Apps**, opening **System settings**, and launching a drawer item do not show parked-use confirmation dialogs. The rain touch lock remains the synchronous safety boundary for the entire receiver, including the drawer.
 
 A long press on the connection control opens the advanced Bluetooth device selector. Audio copy reads the `enable-audio-sink` setting and reports either `Played by the connected phone` or `Played by this device`.
 
@@ -90,7 +98,10 @@ Local assets:
 
 ## Visual evidence
 
-Current public English screenshots:
+Current physical-device screenshots:
+
+- [Installed launcher home on the physical XCover](../artifacts/ui/dedicated-home-launcher-vc95-20260806.png)
+- [Native device-app drawer on the physical XCover](../artifacts/ui/dedicated-app-drawer-vc95-20260806.png)
 
 - [First-run welcome on the physical XCover](../artifacts/ui/readme-first-run-en.png)
 - [First-run WiFi connection choice on the physical XCover](../artifacts/ui/readme-first-run-wifi-en.png)
@@ -107,7 +118,7 @@ Historical and design-development evidence:
 - [Restored motorcycle home on emulator](../artifacts/ui/xcover-home-motorcycle-restored-emulator.png)
 - [Current adaptive app icon](../artifacts/ui/xcover-app-icon-final.png)
 
-Physical-device captures use the XCover in fixed landscape. The public onboarding set uses an English per-app locale and was captured without IP addresses, wireless credentials, peer identifiers, personal notifications, routes, or locations. The locale was returned to the Android system default after capture. Earlier Portuguese and device-specific development captures were removed from the public evidence set. The restored-motorcycle layout was also checked on an Android 15 emulator at 2400×1080. Primary targets remained large and no required control was clipped. The restored layout and both rain-lock states were verified on the physical device.
+Physical-device captures use the XCover in fixed landscape and contain no IP addresses, wireless credentials, peer identifiers, personal notifications, routes, or locations. The current launcher and drawer captures use the receiver's Brazilian Portuguese system locale; the separate onboarding set uses an English per-app locale that was returned to the Android system default after capture. The restored-motorcycle layout was also checked on an Android 15 emulator at 2400×1080. Primary targets remained large and no required control was clipped. The restored layout and both rain-lock states were verified on the physical device.
 
 The dedicated header and connection progress say `Android Auto`; they do not repeat `Wireless` because the dedicated architecture already establishes that context. Technical settings retain wireless terminology where it distinguishes an actual transport mode.
 
